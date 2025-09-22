@@ -27,14 +27,20 @@ fn initialize_and_stop_kills_children() {
 
     // Wait until both have started at least once
     let lines = common::wait_for_lines(&stub.starts, 2, Duration::from_secs(5));
-    assert!(lines.len() >= 2, "expected at least two starts, got {:?}", lines);
+    assert!(
+        lines.len() >= 2,
+        "expected at least two starts, got {:?}",
+        lines
+    );
 
     // Stop
     libagent::stop();
 
     // After stop, send signals should not be necessary; verify that TERM was handled
     let events = common::read_to_string(&stub.events);
-    assert!(events.contains("TERM"), "expected TERM events, got: {}", events);
+    assert!(
+        events.contains("TERM"),
+        "expected TERM events, got: {}",
+        events
+    );
 }
-
-

@@ -1,4 +1,5 @@
 use serial_test::serial;
+#[cfg(unix)]
 use std::env;
 use std::time::Duration;
 
@@ -8,7 +9,9 @@ mod common;
 #[serial]
 fn initialize_is_idempotent_and_stop_is_idempotent() {
     // Use a sleeper to ensure processes stay alive
+    #[cfg(unix)]
     let tmp = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
     let dir = tmp.path();
 
     #[cfg(unix)]
@@ -35,5 +38,3 @@ fn initialize_is_idempotent_and_stop_is_idempotent() {
     libagent::stop();
     libagent::stop();
 }
-
-

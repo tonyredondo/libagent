@@ -10,10 +10,12 @@ crate-type = ["cdylib", "rlib"]
 ctor = "0.2"
 shell-words = "1.1"
 libc = "0.2"
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
+    "Win32_System_JobObjects",
 ] }
+log = { version = "0.4", optional = true }
 
 [dev-dependencies]
 serial_test = "2.0"
@@ -21,3 +23,8 @@ tempfile = "3"
 
 [profile.release]
 panic = "abort"
+
+[features]
+default = []
+# When enabled, route logs through the `log` crate instead of writing to stderr
+log = ["dep:log"]

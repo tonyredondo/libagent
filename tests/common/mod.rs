@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -44,6 +44,7 @@ pub fn wait_for_lines(path: &Path, min_lines: usize, timeout: Duration) -> Vec<S
 pub mod unix {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
 
     pub struct StubPaths {
         pub script: PathBuf,
@@ -64,7 +65,11 @@ pub mod unix {
         let mut perm = fs::metadata(&script).unwrap().permissions();
         perm.set_mode(0o755);
         fs::set_permissions(&script, perm).unwrap();
-        StubPaths { script, starts, events }
+        StubPaths {
+            script,
+            starts,
+            events,
+        }
     }
 
     pub fn create_stub_exit(dir: &Path) -> (PathBuf, PathBuf) {
@@ -91,5 +96,3 @@ pub mod windows {
         )
     }
 }
-
-

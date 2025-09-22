@@ -1,0 +1,115 @@
+# libagent
+
+[![CI](https://github.com/tonyredondo/libagent/actions/workflows/ci.yml/badge.svg)](https://github.com/tonyredondo/libagent/actions/workflows/ci.yml)
+![Rust nightly](https://img.shields.io/badge/rust-nightly-blue)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-informational)
+
+Minimal-runtime Rust library that ensures the Datadog Agent and Trace Agent are running while the library is loaded. Exposes both a Rust API and a stable C FFI for embedding in non-Rust hosts.
+
+## Features
+- Starts and monitors Agent + Trace Agent with exponential backoff
+- Graceful shutdown (SIGTERM then SIGKILL on Unix; Windows Job kill)
+- Idempotent `initialize`/`stop`; destructor stops on unload
+- Cross‑platform: Linux, macOS, Windows (tested in CI)
+
+## Build
+- Requires Rust nightly.
+- Debug: `cargo +nightly build`
+- Release: `cargo +nightly build --release`
+
+Outputs include a Rust `rlib` and a shared library (`.so/.dylib/.dll`) per the crate-type settings.
+
+## Architecture Overview
+- Public API: `lib.rs` re-exports `initialize`/`stop`; a destructor (`#[ctor::dtor]`) calls `stop` on unload.
+- Process Manager (`manager.rs`): spawns Agent and Trace Agent; monitors with periodic ticks and exponential backoff; restarts on exit.
+  - Unix: children run in their own session (`setsid`); sends `SIGTERM`, then `SIGKILL` to the process group on shutdown.
+  - Windows: assigns children to a Job; terminating the Job kills the tree.
+- Configuration (`config.rs`): compile-time defaults with env overrides parsed via `shell-words`; tunables include programs, args, and monitor interval.
+- FFI (`ffi.rs`): exports `Initialize` and `Stop` with `catch_unwind` to avoid unwinding across the FFI boundary.
+- Logging: `LIBAGENT_LOG` level and `LIBAGENT_DEBUG` to inherit child stdout/stderr.
+
+For a deeper dive, see ARCHITECTURE.md.
+
+## Usage (Rust)
+```rust
+fn main() {
+    // Start agents and monitoring
+    libagent::initialize();
+
+    // ... your app logic ...
+
+    // Clean stop (idempotent); also runs automatically at unload/exit
+    libagent::stop();
+}
+```
+
+## Usage (C / FFI)
+Link your application to the produced shared library and call the exported symbols:
+```c
+// Provided by libagent shared library
+void Initialize(void);
+void Stop(void);
+
+int main(void) {
+    Initialize();
+    // ... your program ...
+    Stop();
+    return 0;
+}
+```
+
+Notes: The FFI functions return `void`. Operational errors are logged; panics in Rust are caught with `catch_unwind` to avoid unwinding across the FFI boundary.
+
+## Configuration
+Defaults live in `src/config.rs`. Override at runtime via environment variables:
+- `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`
+- `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`
+- `LIBAGENT_MONITOR_INTERVAL_SECS`
+- Logging: `LIBAGENT_LOG` (error|warn|info|debug), `LIBAGENT_DEBUG` (1/true)
+
+Notes:
+- `*_ARGS` values are parsed using shell-words. Quote arguments as you would in a shell, e.g. `LIBAGENT_AGENT_ARGS='-c "my arg"'`.
+
+Example:
+```sh
+LIBAGENT_AGENT_PROGRAM=/usr/bin/datadog-agent \
+LIBAGENT_TRACE_AGENT_PROGRAM=/usr/bin/trace-agent \
+LIBAGENT_LOG=info LIBAGENT_MONITOR_INTERVAL_SECS=1 \
+cargo +nightly test -- --nocapture
+```
+
+## Logging
+- Default: the library writes its own logs to stderr. Child process stdout/stderr are inherited when `LIBAGENT_DEBUG=1` or when `LIBAGENT_LOG=debug`.
+- `LIBAGENT_DEBUG=1` also sets the internal log level to `debug`.
+- Optional log facade: enable the `log` feature to route logs through the Rust `log` crate.
+
+Cargo example (path dependency):
+```toml
+[dependencies]
+libagent = { path = "../libagent", features = ["log"] }
+```
+
+Init a logger in your host (e.g., env_logger):
+```rust
+fn main() {
+    env_logger::init();
+    libagent::initialize();
+    // ...
+    libagent::stop();
+}
+```
+
+## C Header
+- Use `include/libagent.h` for the C API. Regenerate with cbindgen:
+```sh
+cbindgen --config cbindgen.toml --crate libagent --output include/libagent.h
+```
+
+## Testing
+Run the cross‑platform integration suite:
+- `cargo +nightly test -- --nocapture`
+
+Note: On Rust 2024 nightly, environment mutations in tests (e.g., `std::env::set_var`) are `unsafe`; wrap them in `unsafe { ... }` or use helpers. See AGENTS.md for guidance.
+
+## Contributing
+See AGENTS.md for project structure, style, test guidance, and PR expectations.

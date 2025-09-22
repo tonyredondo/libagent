@@ -21,6 +21,8 @@ jobs:
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -33,7 +35,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo +nightly clippy --all-targets -- -D warnings
+
       - name: Run tests
-        run: cargo test -- --nocapture
+        run: cargo +nightly test -- --nocapture
 
+      - name: Install cbindgen (pinned)
+        run: cargo install cbindgen --version 0.29.0 --locked
 
+      - name: Generate C header
+        run: cbindgen --config cbindgen.toml --crate libagent --output include/libagent.h
+      - name: Verify C header up to date
+        run: git diff --ignore-cr-at-eol --exit-code -- include/libagent.h

@@ -13,30 +13,31 @@
 /// Examples:
 /// - "datadog-agent"
 /// - "/usr/bin/datadog-agent"
-pub const AGENT_PROGRAM: &str = "datadog-agent";
+pub(crate) const AGENT_PROGRAM: &str = "datadog-agent";
 
 /// Arguments to pass to the Datadog Agent.
-pub const AGENT_ARGS: &[&str] = &[];
+pub(crate) const AGENT_ARGS: &[&str] = &[];
 
 /// Path or binary name for the Datadog Trace Agent.
 ///
 /// Examples:
 /// - "trace-agent"
 /// - "/usr/bin/trace-agent"
-pub const TRACE_AGENT_PROGRAM: &str = "trace-agent";
+pub(crate) const TRACE_AGENT_PROGRAM: &str = "trace-agent";
 
 /// Arguments to pass to the Trace Agent.
-pub const TRACE_AGENT_ARGS: &[&str] = &[];
+pub(crate) const TRACE_AGENT_ARGS: &[&str] = &[];
 
 /// Monitor loop interval in seconds.
-pub const MONITOR_INTERVAL_SECS: u64 = 1;
+pub(crate) const MONITOR_INTERVAL_SECS: u64 = 1;
 
 /// Graceful shutdown timeout before forcing kill (seconds).
-pub const GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 5;
+#[cfg(unix)]
+pub(crate) const GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 5;
 
 /// Initial and maximum backoff for respawn on failure (seconds).
-pub const BACKOFF_INITIAL_SECS: u64 = 1;
-pub const BACKOFF_MAX_SECS: u64 = 30;
+pub(crate) const BACKOFF_INITIAL_SECS: u64 = 1;
+pub(crate) const BACKOFF_MAX_SECS: u64 = 30;
 
 /// Environment variable names used for runtime overrides.
 const ENV_AGENT_PROGRAM: &str = "LIBAGENT_AGENT_PROGRAM";
@@ -54,10 +55,7 @@ pub fn get_agent_program() -> String {
 /// The override is parsed using shell-style splitting.
 pub fn get_agent_args() -> Vec<String> {
     match std::env::var(ENV_AGENT_ARGS) {
-        Ok(val) => match shell_words::split(val.trim()) {
-            Ok(v) => v,
-            Err(_) => Vec::new(),
-        },
+        Ok(val) => shell_words::split(val.trim()).unwrap_or_default(),
         Err(_) => AGENT_ARGS.iter().map(|s| s.to_string()).collect(),
     }
 }
@@ -70,10 +68,7 @@ pub fn get_trace_agent_program() -> String {
 /// Returns trace agent args, allowing env override via `LIBAGENT_TRACE_AGENT_ARGS`.
 pub fn get_trace_agent_args() -> Vec<String> {
     match std::env::var(ENV_TRACE_AGENT_ARGS) {
-        Ok(val) => match shell_words::split(val.trim()) {
-            Ok(v) => v,
-            Err(_) => Vec::new(),
-        },
+        Ok(val) => shell_words::split(val.trim()).unwrap_or_default(),
         Err(_) => TRACE_AGENT_ARGS.iter().map(|s| s.to_string()).collect(),
     }
 }
@@ -85,4 +80,3 @@ pub fn get_monitor_interval_secs() -> u64 {
         Err(_) => MONITOR_INTERVAL_SECS,
     }
 }
-

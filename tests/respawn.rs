@@ -30,9 +30,12 @@ fn respawns_on_exit_with_backoff() {
     std::thread::sleep(Duration::from_secs(6));
     let content = common::read_to_string(&starts);
     let count = content.lines().filter(|l| !l.trim().is_empty()).count();
-    assert!(count >= 3, "expected >=3 restarts, got {} (content: {})", count, content);
+    assert!(
+        count >= 3,
+        "expected >=3 restarts, got {} (content: {})",
+        count,
+        content
+    );
 
     libagent::stop();
 }
-
-

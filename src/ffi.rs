@@ -6,7 +6,7 @@
 //! Rust APIs.
 
 use crate::manager;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// Initialize the library: start the Agent and Trace Agent and begin monitoring.
 ///
@@ -30,4 +30,3 @@ pub extern "C" fn Stop() {
         manager::stop();
     }));
 }
-

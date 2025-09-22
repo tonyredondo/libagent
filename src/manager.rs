@@ -7,25 +7,31 @@
 //! The module exposes plain Rust functions (`initialize` and `stop`) for
 //! Rust consumers and to be called from the C FFI layer.
 
+#[cfg(unix)]
+use crate::config::GRACEFUL_SHUTDOWN_TIMEOUT_SECS;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-
-#[cfg(windows)]
-use std::os::windows::io::AsRawHandle;
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
-use windows_sys::Win32::System::Threading::{
-    AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject, TerminateJobObject,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject,
 };
+#[cfg(windows)]
+unsafe extern "system" {
+    fn CreateJobObjectW(lpJobAttributes: *const core::ffi::c_void, lpName: *const u16) -> HANDLE;
+}
 
 use crate::config::{
-    get_agent_args, get_agent_program, get_monitor_interval_secs, get_trace_agent_args,
-    get_trace_agent_program, BACKOFF_INITIAL_SECS, BACKOFF_MAX_SECS, GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
+    BACKOFF_INITIAL_SECS, BACKOFF_MAX_SECS, get_agent_args, get_agent_program,
+    get_monitor_interval_secs, get_trace_agent_args, get_trace_agent_program,
 };
 
 /// Environment variable to enable verbose debug logging.
@@ -76,23 +82,37 @@ fn current_log_level() -> LogLevel {
     })
 }
 
+#[cfg(feature = "log")]
 fn log_at(level: LogLevel, msg: &str) {
-    if current_log_level() >= level {
-        match level {
-            LogLevel::Error | LogLevel::Warn => {
-                eprintln!("[libagent] {}", msg);
-            }
-            LogLevel::Info | LogLevel::Debug => {
-                println!("[libagent] {}", msg);
-            }
-        }
+    // Defer filtering to the `log` facade; emit at mapped level
+    match level {
+        LogLevel::Error => log::error!(target: "libagent", "{}", msg),
+        LogLevel::Warn => log::warn!(target: "libagent", "{}", msg),
+        LogLevel::Info => log::info!(target: "libagent", "{}", msg),
+        LogLevel::Debug => log::debug!(target: "libagent", "{}", msg),
     }
 }
 
-fn log_error(msg: &str) { log_at(LogLevel::Error, msg); }
-fn log_warn(msg: &str) { log_at(LogLevel::Warn, msg); }
-fn log_info(msg: &str) { log_at(LogLevel::Info, msg); }
-fn log_debug(msg: &str) { log_at(LogLevel::Debug, msg); }
+#[cfg(not(feature = "log"))]
+fn log_at(level: LogLevel, msg: &str) {
+    if current_log_level() >= level {
+        // Route all logs to stderr to avoid polluting host stdout
+        eprintln!("[libagent] {}", msg);
+    }
+}
+
+fn log_error(msg: &str) {
+    log_at(LogLevel::Error, msg);
+}
+fn log_warn(msg: &str) {
+    log_at(LogLevel::Warn, msg);
+}
+fn log_info(msg: &str) {
+    log_at(LogLevel::Info, msg);
+}
+fn log_debug(msg: &str) {
+    log_at(LogLevel::Debug, msg);
+}
 
 fn child_stdio_inherit() -> bool {
     is_debug_enabled() || current_log_level() >= LogLevel::Debug
@@ -110,11 +130,11 @@ struct ProcessSpec {
 }
 
 impl ProcessSpec {
-    fn new(name: &'static str, program: &str, args: &[&str]) -> Self {
+    fn new(name: &'static str, program: String, args: Vec<String>) -> Self {
         Self {
             name,
-            program: program.to_string(),
-            args: args.iter().map(|s| s.to_string()).collect(),
+            program,
+            args,
         }
     }
 }
@@ -148,7 +168,7 @@ pub struct AgentManager {
     trace_backoff_secs: Mutex<u64>,
     trace_next_attempt: Mutex<Option<Instant>>,
     #[cfg(windows)]
-    windows_job: Mutex<Option<HANDLE>>, // Job handle to group child processes
+    windows_job: Mutex<Option<isize>>, // Job handle stored as isize for Send/Sync
 }
 
 impl AgentManager {
@@ -160,8 +180,12 @@ impl AgentManager {
             monitor_thread: Mutex::new(None),
             monitor_cv: Condvar::new(),
             monitor_cv_lock: Mutex::new(()),
-            agent_spec: ProcessSpec::new("agent", &get_agent_program(), get_agent_args_as_slice()),
-            trace_spec: ProcessSpec::new("trace-agent", &get_trace_agent_program(), get_trace_agent_args_as_slice()),
+            agent_spec: ProcessSpec::new("agent", get_agent_program(), get_agent_args()),
+            trace_spec: ProcessSpec::new(
+                "trace-agent",
+                get_trace_agent_program(),
+                get_trace_agent_args(),
+            ),
             agent_child: Mutex::new(None),
             trace_child: Mutex::new(None),
             agent_backoff_secs: Mutex::new(BACKOFF_INITIAL_SECS),
@@ -173,15 +197,10 @@ impl AgentManager {
         }
     }
 
-    /// Helpers to convert Vec<String> to &[&str] at construction time
-    /// We use OnceLock to compute args once and keep owned storage.
-    /// (helper functions are defined below the impl)
-
     /// Spawns a subprocess according to the provided spec.
     fn spawn_process(&self, spec: &ProcessSpec) -> std::io::Result<Child> {
         let mut cmd = Command::new(&spec.program);
-        cmd.args(&spec.args)
-            .stdin(Stdio::null());
+        cmd.args(&spec.args).stdin(Stdio::null());
 
         // In debug mode, inherit stdout/stderr so the child processes' output is visible.
         // Otherwise, silence both streams to avoid chatty output in host applications.
@@ -207,7 +226,7 @@ impl AgentManager {
         }
 
         let child = cmd.spawn()?;
-        
+
         // On Windows, assign child to Job object so we can terminate whole tree later
         #[cfg(windows)]
         {
@@ -216,7 +235,9 @@ impl AgentManager {
 
         log_debug(&format!(
             "Spawned {} (program='{}', pid={})",
-            spec.name, spec.program, child.id()
+            spec.name,
+            spec.program,
+            child.id()
         ));
         Ok(child)
     }
@@ -224,13 +245,17 @@ impl AgentManager {
     #[cfg(windows)]
     fn windows_job_handle(&self) -> HANDLE {
         use std::ptr::null_mut;
-        // We keep the handle in a static in the struct via a Mutex<Option<HANDLE>>
         let mut guard = self.windows_job.lock().unwrap();
-        if let Some(h) = *guard { return h; }
+        if let Some(hraw) = *guard {
+            return hraw as HANDLE;
+        }
         unsafe {
             let job: HANDLE = CreateJobObjectW(null_mut(), null_mut());
-            if job == 0 {
-                return 0;
+            if job.is_null() {
+                log_warn(
+                    "Failed to create Windows Job object; process-tree termination may be unreliable.",
+                );
+                return null_mut();
             }
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
             info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -241,10 +266,13 @@ impl AgentManager {
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             );
             if ok == 0 {
+                log_warn(
+                    "Failed to configure Windows Job object; process-tree termination may be unreliable.",
+                );
                 CloseHandle(job);
-                return 0;
+                return null_mut();
             }
-            *guard = Some(job);
+            *guard = Some(job as isize);
             job
         }
     }
@@ -252,10 +280,17 @@ impl AgentManager {
     #[cfg(windows)]
     fn assign_child_to_job(&self, child: &Child) {
         let job = self.windows_job_handle();
-        if job == 0 { return; }
+        if job.is_null() {
+            return;
+        }
         unsafe {
-            let ph: HANDLE = child.as_raw_handle() as isize;
-            let _ = AssignProcessToJobObject(job, ph);
+            let ph: HANDLE = child.as_raw_handle() as HANDLE;
+            let ok = AssignProcessToJobObject(job, ph);
+            if ok == 0 {
+                log_warn(
+                    "Failed to assign child process to Windows Job; termination may leave orphans.",
+                );
+            }
         }
     }
 
@@ -272,14 +307,20 @@ impl AgentManager {
         if let Some(child) = child_guard.as_mut() {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    log_warn(&format!("{} exited with status {:?}. Will respawn.", spec.name, status));
+                    log_warn(&format!(
+                        "{} exited with status {:?}. Will respawn.",
+                        spec.name, status
+                    ));
                     *child_guard = None;
                 }
                 Ok(None) => {
                     return; // still running
                 }
                 Err(err) => {
-                    log_warn(&format!("Failed to check {} status: {}. Treating as not running.", spec.name, err));
+                    log_warn(&format!(
+                        "Failed to check {} status: {}. Treating as not running.",
+                        spec.name, err
+                    ));
                     *child_guard = None;
                 }
             }
@@ -287,8 +328,8 @@ impl AgentManager {
 
         // Not running; check backoff window
         let now = Instant::now();
-        if let Some(next) = *next_attempt_guard {
-            if now < next { return; }
+        if next_attempt_guard.as_ref().is_some_and(|&next| now < next) {
+            return;
         }
 
         // Try to spawn
@@ -299,10 +340,15 @@ impl AgentManager {
                 *next_attempt_guard = None;
             }
             Err(err) => {
-                log_error(&format!("Failed to spawn {}: {}. Backing off {}s.", spec.name, err, *backoff_secs_guard));
+                log_error(&format!(
+                    "Failed to spawn {} (program='{}', args={:?}): {}. Backing off {}s.",
+                    spec.name, spec.program, spec.args, err, *backoff_secs_guard
+                ));
                 let wait = Duration::from_secs(*backoff_secs_guard);
                 *next_attempt_guard = Some(now + wait);
-                *backoff_secs_guard = (*backoff_secs_guard).saturating_mul(2).min(BACKOFF_MAX_SECS);
+                *backoff_secs_guard = (*backoff_secs_guard)
+                    .saturating_mul(2)
+                    .min(BACKOFF_MAX_SECS);
             }
         }
     }
@@ -323,13 +369,13 @@ impl AgentManager {
             let mut a = self.agent_child.lock().unwrap();
             let mut ab = self.agent_backoff_secs.lock().unwrap();
             let mut an = self.agent_next_attempt.lock().unwrap();
-            self.tick_process(&mut *a, &self.agent_spec, &mut *ab, &mut *an);
+            self.tick_process(&mut a, &self.agent_spec, &mut ab, &mut an);
         }
         {
             let mut t = self.trace_child.lock().unwrap();
             let mut tb = self.trace_backoff_secs.lock().unwrap();
             let mut tn = self.trace_next_attempt.lock().unwrap();
-            self.tick_process(&mut *t, &self.trace_spec, &mut *tb, &mut *tn);
+            self.tick_process(&mut t, &self.trace_spec, &mut tb, &mut tn);
         }
 
         // Start monitor thread
@@ -338,7 +384,7 @@ impl AgentManager {
             let this = Arc::clone(
                 GLOBAL_MANAGER
                     .get()
-                    .expect("GLOBAL_MANAGER must be initialized before start")
+                    .expect("GLOBAL_MANAGER must be initialized before start"),
             );
             let handle = thread::spawn(move || {
                 this.monitor_loop();
@@ -357,7 +403,7 @@ impl AgentManager {
                 let mut a = self.agent_child.lock().unwrap();
                 let mut ab = self.agent_backoff_secs.lock().unwrap();
                 let mut an = self.agent_next_attempt.lock().unwrap();
-                self.tick_process(&mut *a, &self.agent_spec, &mut *ab, &mut *an);
+                self.tick_process(&mut a, &self.agent_spec, &mut ab, &mut an);
             }
 
             // Tick and (re)spawn trace-agent if needed
@@ -365,7 +411,7 @@ impl AgentManager {
                 let mut t = self.trace_child.lock().unwrap();
                 let mut tb = self.trace_backoff_secs.lock().unwrap();
                 let mut tn = self.trace_next_attempt.lock().unwrap();
-                self.tick_process(&mut *t, &self.trace_spec, &mut *tb, &mut *tn);
+                self.tick_process(&mut t, &self.trace_spec, &mut tb, &mut tn);
             }
 
             // Compute dynamic sleep until next try based on backoff timers
@@ -373,8 +419,18 @@ impl AgentManager {
             let next_agent = *self.agent_next_attempt.lock().unwrap();
             let next_trace = *self.trace_next_attempt.lock().unwrap();
             let mut sleep_dur = interval;
-            if let Some(na) = next_agent { if na > now { sleep_dur = sleep_dur.min(na - now); } }
-            if let Some(nt) = next_trace { if nt > now { sleep_dur = sleep_dur.min(nt - now); } }
+            match next_agent {
+                Some(na) if na > now => {
+                    sleep_dur = sleep_dur.min(na - now);
+                }
+                _ => {}
+            }
+            match next_trace {
+                Some(nt) if nt > now => {
+                    sleep_dur = sleep_dur.min(nt - now);
+                }
+                _ => {}
+            }
 
             // Wait with condvar so stop() can wake immediately
             let lock = self.monitor_cv_lock.lock().unwrap();
@@ -385,13 +441,16 @@ impl AgentManager {
 
     /// Attempts to gracefully terminate a child process. If the process already
     /// exited, the error is ignored.
+    #[cfg(unix)]
     fn wait_with_timeout(child: &mut Child, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => return true,
                 Ok(None) => {
-                    if Instant::now() >= deadline { return false; }
+                    if Instant::now() >= deadline {
+                        return false;
+                    }
                     thread::sleep(Duration::from_millis(50));
                 }
                 Err(_) => return false,
@@ -401,15 +460,17 @@ impl AgentManager {
 
     fn graceful_kill(name: &str, child_opt: &mut Option<Child>) {
         if let Some(mut child) = child_opt.take() {
-            let pid = child.id() as i32;
-            let timeout = Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
-
             #[cfg(unix)]
             unsafe {
+                let pid = child.id() as i32;
+                let timeout = Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
                 // Send SIGTERM to the process group (negative pid targets group)
                 let pgid = -pid;
                 if libc::kill(pgid, libc::SIGTERM) == -1 {
-                    log_warn(&format!("Failed to send SIGTERM to {} group (pid={}).", name, pid));
+                    log_warn(&format!(
+                        "Failed to send SIGTERM to {} group (pid={}).",
+                        name, pid
+                    ));
                 } else {
                     log_debug(&format!("Sent SIGTERM to {} group (pid={}).", name, pid));
                 }
@@ -417,7 +478,10 @@ impl AgentManager {
                 if !terminated_cleanly {
                     // escalate
                     if libc::kill(pgid, libc::SIGKILL) == -1 {
-                        log_warn(&format!("Failed to send SIGKILL to {} group (pid={}).", name, pid));
+                        log_warn(&format!(
+                            "Failed to send SIGKILL to {} group (pid={}).",
+                            name, pid
+                        ));
                     } else {
                         log_debug(&format!("Sent SIGKILL to {} group (pid={}).", name, pid));
                     }
@@ -452,42 +516,38 @@ impl AgentManager {
         }
 
         // On Windows, terminate the Job (kills all assigned processes), then close it
+        // Record whether we've terminated via Job to avoid redundant per-child kill.
         #[cfg(windows)]
-        unsafe {
-            if let Some(job) = self.windows_job.lock().unwrap().take() {
+        let terminated_via_job: bool = unsafe {
+            if let Some(job_raw) = self.windows_job.lock().unwrap().take() {
+                let job = job_raw as HANDLE;
                 let _ = TerminateJobObject(job, 1);
                 let _ = CloseHandle(job);
+                true
+            } else {
+                false
             }
-        }
+        };
 
-        // Kill children
+        // Kill children unless we already terminated the process tree via Windows Job
+        #[cfg(windows)]
+        if !terminated_via_job {
+            let mut a = self.agent_child.lock().unwrap();
+            Self::graceful_kill(self.agent_spec.name, &mut a);
+            let mut t = self.trace_child.lock().unwrap();
+            Self::graceful_kill(self.trace_spec.name, &mut t);
+        }
+        #[cfg(not(windows))]
         {
             let mut a = self.agent_child.lock().unwrap();
-            Self::graceful_kill(self.agent_spec.name, &mut *a);
-        }
-        {
+            Self::graceful_kill(self.agent_spec.name, &mut a);
             let mut t = self.trace_child.lock().unwrap();
-            Self::graceful_kill(self.trace_spec.name, &mut *t);
+            Self::graceful_kill(self.trace_spec.name, &mut t);
         }
     }
 }
 
-fn get_agent_args_as_slice() -> &'static [&'static str] {
-    static ARGS: OnceLock<Vec<String>> = OnceLock::new();
-    static SLICE: OnceLock<Vec<&'static str>> = OnceLock::new();
-    let v = ARGS.get_or_init(|| get_agent_args());
-    SLICE.get_or_init(|| v.iter().map(|s| s.as_str()).collect());
-    // SAFETY: the &'static str in SLICE point into the static Vec<String> in ARGS
-    unsafe { &*(SLICE.get().unwrap().as_slice() as *const [&str] as *const [&'static str]) }
-}
-
-fn get_trace_agent_args_as_slice() -> &'static [&'static str] {
-    static ARGS: OnceLock<Vec<String>> = OnceLock::new();
-    static SLICE: OnceLock<Vec<&'static str>> = OnceLock::new();
-    let v = ARGS.get_or_init(|| get_trace_agent_args());
-    SLICE.get_or_init(|| v.iter().map(|s| s.as_str()).collect());
-    unsafe { &*(SLICE.get().unwrap().as_slice() as *const [&str] as *const [&'static str]) }
-}
+// removed unsafe arg caching; ProcessSpec now owns program and args
 
 /// Global singleton manager used by both Rust and FFI front-ends.
 static GLOBAL_MANAGER: OnceLock<Arc<AgentManager>> = OnceLock::new();
@@ -510,4 +570,3 @@ pub fn stop() {
         mgr.stop();
     }
 }
-
