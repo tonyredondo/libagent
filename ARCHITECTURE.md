@@ -12,7 +12,8 @@ This document explains how libagent is structured, how it manages the Agent and 
 - Public API: `src/lib.rs` re-exports `initialize`/`stop` and registers a destructor that calls `stop` on unload.
 - Process Manager: `src/manager.rs` implements spawn, monitoring/respawn, and shutdown.
 - Configuration: `src/config.rs` contains defaults and environment variable overrides (parsed with shell-words).
-- FFI: `src/ffi.rs` exposes `Initialize` and `Stop` for C consumers; see `include/libagent.h`.
+- FFI: `src/ffi.rs` exposes `Initialize`, `Stop`, and the UDS proxy API; see `include/libagent.h`.
+- UDS HTTP client: `src/uds.rs` implements a minimal HTTP/1.1 client over Unix Domain Sockets used by the proxy.
 
 ## Lifecycle
 1. Initialize: `initialize()` sets up a singleton `AgentManager` and starts both processes immediately, then launches a monitor thread.
@@ -83,6 +84,7 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
   - `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`
   - `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`
   - `LIBAGENT_MONITOR_INTERVAL_SECS`
+  - UDS proxy path (Unix): `LIBAGENT_TRACE_AGENT_UDS` (default: `/var/run/datadog/apm.socket`)
 - Example: `LIBAGENT_AGENT_ARGS='-c "quoted arg"'`
 
 ## Logging
@@ -95,14 +97,24 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 - FFI functions catch panics with `catch_unwind` to prevent unwinding across the FFI boundary.
 
 ## FFI Surface
-- C API: `Initialize(void)` and `Stop(void)` (see `include/libagent.h`).
+- C API: `Initialize(void)`, `Stop(void)`, and `ProxyTraceAgentUds(...)` (see `include/libagent.h`).
 - Rust nightly 2024 uses `#[unsafe(no_mangle)]` on FFI exports to match the current toolchain.
+
+### UDS Proxy (Trace Agent)
+- Purpose: allow embedding consumers to proxy HTTP requests to the trace-agent over a Unix Domain Socket (UDS) without linking HTTP client code.
+- Exported function: `int32_t ProxyTraceAgentUds(const char* method, const char* path, const char* headers, const uint8_t* body_ptr, size_t body_len, LibagentHttpResponse** out_resp, char** out_err)`.
+- Path resolution (Unix): socket path = env `LIBAGENT_TRACE_AGENT_UDS` or default `/var/run/datadog/apm.socket`.
+- Request shape: headers are a single string with lines `Name: Value` separated by `\n` or `\r\n`; body is an optional byte slice.
+- Response: status (u16), headers (CRLF-joined lines), body (bytes). Free with `FreeHttpResponse`.
+- Protocol support: HTTP/1.1 with `Content-Length` and `Transfer-Encoding: chunked` responses.
+- Platform: Unix only; on non‑Unix, the function returns an error.
 
 ## Testing Strategy
 - Integration tests under `tests/` use temporary stub scripts to simulate child behavior.
 - `serial_test` isolates global state; environment mutations are marked `unsafe` due to Rust 2024 nightly constraints.
 - Cross‑platform coverage:
   - Unix: start/stop lifecycle and respawn/backoff behavior.
+  - Unix: UDS proxy (basic + chunked) in `tests/uds_proxy.rs` (skips under sandboxed environments which deny UDS binds).
   - Windows: sanity check that Job-based shutdown works.
 
 ## When to Update This Doc

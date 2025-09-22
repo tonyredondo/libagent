@@ -45,6 +45,8 @@ const ENV_AGENT_ARGS: &str = "LIBAGENT_AGENT_ARGS";
 const ENV_TRACE_AGENT_PROGRAM: &str = "LIBAGENT_TRACE_AGENT_PROGRAM";
 const ENV_TRACE_AGENT_ARGS: &str = "LIBAGENT_TRACE_AGENT_ARGS";
 const ENV_MONITOR_INTERVAL_SECS: &str = "LIBAGENT_MONITOR_INTERVAL_SECS";
+#[cfg(unix)]
+const ENV_TRACE_AGENT_UDS: &str = "LIBAGENT_TRACE_AGENT_UDS";
 
 /// Returns agent program, allowing env override via `LIBAGENT_AGENT_PROGRAM`.
 pub fn get_agent_program() -> String {
@@ -79,4 +81,14 @@ pub fn get_monitor_interval_secs() -> u64 {
         Ok(val) => val.parse::<u64>().unwrap_or(MONITOR_INTERVAL_SECS),
         Err(_) => MONITOR_INTERVAL_SECS,
     }
+}
+
+/// Default Unix Domain Socket path for the trace agent.
+#[cfg(unix)]
+pub(crate) const TRACE_AGENT_UDS_DEFAULT: &str = "/var/run/datadog/apm.socket";
+
+/// Returns trace agent UDS path, allowing env override via `LIBAGENT_TRACE_AGENT_UDS`.
+#[cfg(unix)]
+pub fn get_trace_agent_uds_path() -> String {
+    std::env::var(ENV_TRACE_AGENT_UDS).unwrap_or_else(|_| TRACE_AGENT_UDS_DEFAULT.to_string())
 }

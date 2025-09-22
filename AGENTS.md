@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 - For a deeper architectural description (lifecycle, backoff, platform specifics), see ARCHITECTURE.md.
 - `src/` — core library code:
-  - `lib.rs` (public API: `initialize`, `stop`), `ffi.rs` (C FFI: `Initialize`, `Stop`), `manager.rs` (process lifecycle), `config.rs` (constants/env overrides).
+  - `lib.rs` (public API: `initialize`, `stop`), `ffi.rs` (C FFI: `Initialize`, `Stop`, `ProxyTraceAgentUds`), `manager.rs` (process lifecycle), `config.rs` (constants/env overrides), `uds.rs` (HTTP-over-UDS client used by the proxy).
 - `tests/` — integration tests (`respawn.rs`, `idempotent.rs`, `start_stop_unix.rs`, `windows_sanity.rs`) plus helpers in `tests/common/`.
 - `.github/workflows/ci.yml` — GitHub Actions (Linux, macOS, Windows; nightly toolchain).
 - `target/` — build artifacts.
@@ -29,6 +29,7 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 - Cross‑platform: Unix tests rely on `/bin/sh`; Windows tests use PowerShell.
 - Run locally with `cargo +nightly test`; CI runs on all three OSes.
 - Rust 2024/`nightly`: environment mutations are `unsafe`. Wrap `env::set_var`/`env::remove_var` in `unsafe { ... }` in tests, and keep tests `#[serial]` to avoid races.
+ - UDS proxy tests: see `tests/uds_proxy.rs` (basic and chunked). Tests skip gracefully if UDS bind is denied by the environment.
 
 ## Commit & Pull Request Guidelines
 - Use Conventional Commits (e.g., `feat:`, `fix:`, `test:`, `chore:`). Keep subject ≤72 chars; add a focused body when helpful.
@@ -37,6 +38,7 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 
 ## Security & Configuration Tips
 - Default programs/args live in `src/config.rs`. Runtime overrides (for dev/tests): `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`, `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`, `LIBAGENT_MONITOR_INTERVAL_SECS`, `LIBAGENT_LOG`, `LIBAGENT_DEBUG`.
+- UDS proxy: `LIBAGENT_TRACE_AGENT_UDS` overrides the Unix socket path used by `ProxyTraceAgentUds` (default: `/var/run/datadog/apm.socket`).
 - `*_ARGS` values are parsed using shell-words. Quote arguments as you would in a shell (e.g., `LIBAGENT_AGENT_ARGS='-c "my arg"'`).
 - Example: `LIBAGENT_LOG=debug LIBAGENT_MONITOR_INTERVAL_SECS=1 cargo +nightly test -- --nocapture`.
 
@@ -45,6 +47,11 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 - Generate the C header with cbindgen: `cbindgen --config cbindgen.toml --crate libagent --output include/libagent.h` (CI regenerates it and validates that it matches the committed header).
 - If you change the FFI surface, regenerate and commit the updated `include/libagent.h`.
 - Optional feature: enable `--features log` to route logs through the `log` crate instead of stderr. You may run tests with logging enabled: `cargo +nightly test --features log -- --nocapture`.
+
+### UDS Proxy FFI
+- New export: `ProxyTraceAgentUds(...)` proxies an HTTP request over a Unix Domain Socket to the trace-agent and returns the raw HTTP status, headers, and body.
+- See `include/libagent.h` for the C types `LibagentHttpBuffer` and `LibagentHttpResponse` and free helpers `FreeHttpBuffer`, `FreeHttpResponse`, `FreeCString`.
+- On non-Unix platforms, the function returns an error.
 
 ## Platform Notes
 - Windows process management uses Job Objects for reliable termination of the child tree. For compatibility across `windows-sys` versions, `CreateJobObjectW` is declared via an `unsafe extern "system"` block; do not change its import path without verifying CI across OS/toolchains.

@@ -25,7 +25,7 @@ Outputs include a Rust `rlib` and a shared library (`.so/.dylib/.dll`) per the c
   - Unix: children run in their own session (`setsid`); sends `SIGTERM`, then `SIGKILL` to the process group on shutdown.
   - Windows: assigns children to a Job; terminating the Job kills the tree.
 - Configuration (`config.rs`): compile-time defaults with env overrides parsed via `shell-words`; tunables include programs, args, and monitor interval.
-- FFI (`ffi.rs`): exports `Initialize` and `Stop` with `catch_unwind` to avoid unwinding across the FFI boundary.
+- FFI (`ffi.rs`): exports `Initialize`, `Stop`, and a Unix UDS proxy (`ProxyTraceAgentUds`) with `catch_unwind` to avoid unwinding across the FFI boundary.
 - Logging: `LIBAGENT_LOG` level and `LIBAGENT_DEBUG` to inherit child stdout/stderr.
 
 For a deeper dive, see ARCHITECTURE.md.
@@ -49,6 +49,30 @@ Link your application to the produced shared library and call the exported symbo
 // Provided by libagent shared library
 void Initialize(void);
 void Stop(void);
+// Proxy an HTTP request over Unix Domain Socket (UDS) to the trace-agent
+// Returns 0 on success; negative on error. Allocates output which must be freed.
+typedef struct {
+  unsigned char *data;
+  size_t len;
+} LibagentHttpBuffer;
+
+typedef struct {
+  uint16_t status;
+  LibagentHttpBuffer headers; // CRLF-separated header lines
+  LibagentHttpBuffer body;
+} LibagentHttpResponse;
+
+int32_t ProxyTraceAgentUds(const char *method,
+                           const char *path,
+                           const char *headers,
+                           const unsigned char *body_ptr,
+                           size_t body_len,
+                           LibagentHttpResponse **out_resp,
+                           char **out_err);
+
+void FreeHttpBuffer(LibagentHttpBuffer buf);
+void FreeHttpResponse(LibagentHttpResponse *resp);
+void FreeCString(char *s);
 
 int main(void) {
     Initialize();
@@ -57,6 +81,12 @@ int main(void) {
     return 0;
 }
 ```
+
+UDS proxy notes:
+- Socket path resolution (Unix): env `LIBAGENT_TRACE_AGENT_UDS` or default `/var/run/datadog/apm.socket`.
+- `headers`: string with lines `Name: Value` separated by `\n` or `\r\n`.
+- `out_resp->headers`: same format, concatenated CRLF lines; free with `FreeHttpBuffer` via `FreeHttpResponse`.
+- Free all allocated outputs with the provided free functions.
 
 Notes: The FFI functions return `void`. Operational errors are logged; panics in Rust are caught with `catch_unwind` to avoid unwinding across the FFI boundary.
 
@@ -105,9 +135,20 @@ fn main() {
 cbindgen --config cbindgen.toml --crate libagent --output include/libagent.h
 ```
 
+## UDS Proxy (Trace Agent)
+- Purpose: allow embedding hosts to call the trace-agent HTTP API over a Unix Domain Socket without linking an HTTP client.
+- Function: `ProxyTraceAgentUds(method, path, headers, body_ptr, body_len, out_resp, out_err)`.
+- Socket path (Unix): env `LIBAGENT_TRACE_AGENT_UDS` or default `/var/run/datadog/apm.socket`.
+- Headers format: one string with lines `Name: Value` separated by `\n` or `\r\n`.
+- Response: status (u16), headers (CRLF-joined lines), body (bytes). Free with `FreeHttpResponse`.
+- Protocols: supports `Content-Length` and `Transfer-Encoding: chunked` responses.
+- Platform: Unix only; returns an error on non‑Unix.
+
 ## Testing
 Run the cross‑platform integration suite:
 - `cargo +nightly test -- --nocapture`
+
+Examples in multiple languages are under `examples/` (C, Go, Java/JNA, .NET, Node.js, Python, Ruby). See `examples/README.md` for build/run tips.
 
 Note: On Rust 2024 nightly, environment mutations in tests (e.g., `std::env::set_var`) are `unsafe`; wrap them in `unsafe { ... }` or use helpers. See AGENTS.md for guidance.
 

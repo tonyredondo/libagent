@@ -17,6 +17,7 @@
 mod config;
 mod ffi;
 mod manager;
+mod uds;
 
 pub use manager::{initialize, stop};
 
