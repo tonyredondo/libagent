@@ -1,0 +1,23 @@
+[package]
+name = "libagent"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ctor = "0.2"
+shell-words = "1.1"
+libc = "0.2"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+serial_test = "2.0"
+tempfile = "3"
+
+[profile.release]
+panic = "abort"
