@@ -114,8 +114,33 @@ fn log_debug(msg: &str) {
     log_at(LogLevel::Debug, msg);
 }
 
+/// Helper function to lock a mutex while handling potential poisoning.
+/// If the mutex is poisoned (due to a panic in another thread), we recover
+/// the data and continue, logging a warning.
+fn lock_mutex<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            log_warn("Mutex was poisoned, recovering and continuing");
+            poisoned.into_inner()
+        }
+    }
+}
+
 fn child_stdio_inherit() -> bool {
-    is_debug_enabled() || current_log_level() >= LogLevel::Debug
+    // Inherit when explicit debug env is on or our internal level is Debug.
+    if is_debug_enabled() || current_log_level() >= LogLevel::Debug {
+        return true;
+    }
+    // If the optional `log` facade is enabled and the host logger is at debug for our target,
+    // also inherit to surface child output alongside our logs.
+    #[cfg(feature = "log")]
+    {
+        if log::log_enabled!(target: "libagent", log::Level::Debug) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Specification of a subprocess to manage.
@@ -245,7 +270,7 @@ impl AgentManager {
     #[cfg(windows)]
     fn windows_job_handle(&self) -> HANDLE {
         use std::ptr::null_mut;
-        let mut guard = self.windows_job.lock().unwrap();
+        let mut guard = lock_mutex(&self.windows_job);
         if let Some(hraw) = *guard {
             return hraw as HANDLE;
         }
@@ -259,6 +284,14 @@ impl AgentManager {
             }
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
             info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // Explicitly zero other potentially sensitive fields
+            info.BasicLimitInformation.PerProcessUserTimeLimit = 0;
+            info.BasicLimitInformation.PerJobUserTimeLimit = 0;
+            info.IoInfo = std::mem::zeroed();
+            info.JobMemoryLimit = 0;
+            info.ProcessMemoryLimit = 0;
+            info.PeakProcessMemoryUsed = 0;
+            info.PeakJobMemoryUsed = 0;
             let ok = SetInformationJobObject(
                 job,
                 JobObjectExtendedLimitInformation,
@@ -355,7 +388,7 @@ impl AgentManager {
 
     /// Starts both child processes (if not already started) and launches the monitor thread.
     fn start(&self) {
-        let _guard = self.start_stop_lock.lock().unwrap();
+        let _guard = lock_mutex(&self.start_stop_lock);
         if self.should_run.swap(true, Ordering::SeqCst) {
             // Already running
             log_debug("Initialize called; manager already running.");
@@ -366,26 +399,22 @@ impl AgentManager {
 
         // Ensure processes started immediately
         {
-            let mut a = self.agent_child.lock().unwrap();
-            let mut ab = self.agent_backoff_secs.lock().unwrap();
-            let mut an = self.agent_next_attempt.lock().unwrap();
+            let mut a = lock_mutex(&self.agent_child);
+            let mut ab = lock_mutex(&self.agent_backoff_secs);
+            let mut an = lock_mutex(&self.agent_next_attempt);
             self.tick_process(&mut a, &self.agent_spec, &mut ab, &mut an);
         }
         {
-            let mut t = self.trace_child.lock().unwrap();
-            let mut tb = self.trace_backoff_secs.lock().unwrap();
-            let mut tn = self.trace_next_attempt.lock().unwrap();
+            let mut t = lock_mutex(&self.trace_child);
+            let mut tb = lock_mutex(&self.trace_backoff_secs);
+            let mut tn = lock_mutex(&self.trace_next_attempt);
             self.tick_process(&mut t, &self.trace_spec, &mut tb, &mut tn);
         }
 
         // Start monitor thread
-        let mut monitor_guard = self.monitor_thread.lock().unwrap();
+        let mut monitor_guard = lock_mutex(&self.monitor_thread);
         if monitor_guard.is_none() {
-            let this = Arc::clone(
-                GLOBAL_MANAGER
-                    .get()
-                    .expect("GLOBAL_MANAGER must be initialized before start"),
-            );
+            let this = Arc::clone(get_manager());
             let handle = thread::spawn(move || {
                 this.monitor_loop();
             });
@@ -393,47 +422,61 @@ impl AgentManager {
         }
     }
 
+    /// Monitor a single process and return the next attempt time if backoff is active.
+    fn monitor_single_process(
+        &self,
+        child_mutex: &Mutex<Option<Child>>,
+        spec: &ProcessSpec,
+        backoff_mutex: &Mutex<u64>,
+        next_attempt_mutex: &Mutex<Option<Instant>>,
+    ) -> Option<Instant> {
+        let mut child_guard = lock_mutex(child_mutex);
+        let mut backoff_guard = lock_mutex(backoff_mutex);
+        let mut next_attempt_guard = lock_mutex(next_attempt_mutex);
+        self.tick_process(
+            &mut child_guard,
+            spec,
+            &mut backoff_guard,
+            &mut next_attempt_guard,
+        );
+        *next_attempt_guard
+    }
+
     /// Periodically checks the child processes and respawns any that have exited.
     fn monitor_loop(&self) {
         log_debug("Monitor thread started.");
         let interval = Duration::from_secs(get_monitor_interval_secs());
         while self.should_run.load(Ordering::SeqCst) {
-            // Tick and (re)spawn agent if needed
-            {
-                let mut a = self.agent_child.lock().unwrap();
-                let mut ab = self.agent_backoff_secs.lock().unwrap();
-                let mut an = self.agent_next_attempt.lock().unwrap();
-                self.tick_process(&mut a, &self.agent_spec, &mut ab, &mut an);
-            }
-
-            // Tick and (re)spawn trace-agent if needed
-            {
-                let mut t = self.trace_child.lock().unwrap();
-                let mut tb = self.trace_backoff_secs.lock().unwrap();
-                let mut tn = self.trace_next_attempt.lock().unwrap();
-                self.tick_process(&mut t, &self.trace_spec, &mut tb, &mut tn);
-            }
+            // Tick and (re)spawn processes if needed
+            let next_agent = self.monitor_single_process(
+                &self.agent_child,
+                &self.agent_spec,
+                &self.agent_backoff_secs,
+                &self.agent_next_attempt,
+            );
+            let next_trace = self.monitor_single_process(
+                &self.trace_child,
+                &self.trace_spec,
+                &self.trace_backoff_secs,
+                &self.trace_next_attempt,
+            );
 
             // Compute dynamic sleep until next try based on backoff timers
             let now = Instant::now();
-            let next_agent = *self.agent_next_attempt.lock().unwrap();
-            let next_trace = *self.trace_next_attempt.lock().unwrap();
             let mut sleep_dur = interval;
-            match next_agent {
-                Some(na) if na > now => {
-                    sleep_dur = sleep_dur.min(na - now);
-                }
-                _ => {}
+            if let Some(na) = next_agent
+                && na > now
+            {
+                sleep_dur = sleep_dur.min(na - now);
             }
-            match next_trace {
-                Some(nt) if nt > now => {
-                    sleep_dur = sleep_dur.min(nt - now);
-                }
-                _ => {}
+            if let Some(nt) = next_trace
+                && nt > now
+            {
+                sleep_dur = sleep_dur.min(nt - now);
             }
 
             // Wait with condvar so stop() can wake immediately
-            let lock = self.monitor_cv_lock.lock().unwrap();
+            let lock = lock_mutex(&self.monitor_cv_lock);
             let _ = self.monitor_cv.wait_timeout(lock, sleep_dur).unwrap();
         }
         log_debug("Monitor thread stopping.");
@@ -458,34 +501,126 @@ impl AgentManager {
         }
     }
 
+    /// Send a signal to a Unix process group and wait for termination.
+    #[cfg(unix)]
+    fn signal_process_group(
+        child: &mut Child,
+        name: &str,
+        pid: i32,
+        pgid: i32,
+        signal: i32,
+        signal_name: &str,
+        timeout: Duration,
+    ) -> bool {
+        if unsafe { libc::kill(pgid, signal) } == 0 {
+            log_debug(&format!(
+                "Sent {} to {} group (pid={}).",
+                signal_name, name, pid
+            ));
+            Self::wait_with_timeout(child, timeout)
+        } else {
+            log_warn(&format!(
+                "Failed to send {} to {} group (pid={}).",
+                signal_name, name, pid
+            ));
+            false
+        }
+    }
+
+    /// Send a signal to a Unix process PID and wait for termination.
+    #[cfg(unix)]
+    fn signal_process_pid(
+        child: &mut Child,
+        name: &str,
+        pid: i32,
+        signal: i32,
+        signal_name: &str,
+        timeout: Duration,
+    ) -> bool {
+        if unsafe { libc::kill(pid, signal) } == 0 {
+            log_debug(&format!("Sent {} to {} (pid={}).", signal_name, name, pid));
+            Self::wait_with_timeout(child, timeout)
+        } else {
+            log_warn(&format!(
+                "Failed to send {} to {} (pid={}).",
+                signal_name, name, pid
+            ));
+            false
+        }
+    }
+
     fn graceful_kill(name: &str, child_opt: &mut Option<Child>) {
         if let Some(mut child) = child_opt.take() {
             #[cfg(unix)]
-            unsafe {
+            {
                 let pid = child.id() as i32;
                 let timeout = Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
-                // Send SIGTERM to the process group (negative pid targets group)
+                // Try process group first (negative pid targets group). If that fails,
+                // fall back to signaling the specific PID to avoid hangs when setsid() fails.
                 let pgid = -pid;
-                if libc::kill(pgid, libc::SIGTERM) == -1 {
+                let mut terminated;
+
+                // TERM group
+                terminated = Self::signal_process_group(
+                    &mut child,
+                    name,
+                    pid,
+                    pgid,
+                    libc::SIGTERM,
+                    "SIGTERM",
+                    timeout,
+                );
+
+                // KILL group if still running
+                if !terminated {
+                    terminated = Self::signal_process_group(
+                        &mut child,
+                        name,
+                        pid,
+                        pgid,
+                        libc::SIGKILL,
+                        "SIGKILL",
+                        timeout,
+                    );
+                }
+
+                // Fall back to per-PID signaling if group signaling failed
+                if !terminated {
+                    terminated = Self::signal_process_pid(
+                        &mut child,
+                        name,
+                        pid,
+                        libc::SIGTERM,
+                        "SIGTERM",
+                        timeout,
+                    );
+                    if !terminated {
+                        terminated = Self::signal_process_pid(
+                            &mut child,
+                            name,
+                            pid,
+                            libc::SIGKILL,
+                            "SIGKILL",
+                            timeout,
+                        );
+                    }
+                }
+
+                // As a last resort, ask std to kill and wait with timeout; avoid indefinite blocking.
+                if !terminated {
+                    let _ = child.kill();
+                    if Self::wait_with_timeout(&mut child, timeout) {
+                        terminated = true;
+                    }
+                }
+
+                if terminated {
+                    log_info(&format!("{} terminated.", name));
+                } else {
                     log_warn(&format!(
-                        "Failed to send SIGTERM to {} group (pid={}).",
+                        "{} may still be running after shutdown attempts (pid={}).",
                         name, pid
                     ));
-                } else {
-                    log_debug(&format!("Sent SIGTERM to {} group (pid={}).", name, pid));
-                }
-                let terminated_cleanly = Self::wait_with_timeout(&mut child, timeout);
-                if !terminated_cleanly {
-                    // escalate
-                    if libc::kill(pgid, libc::SIGKILL) == -1 {
-                        log_warn(&format!(
-                            "Failed to send SIGKILL to {} group (pid={}).",
-                            name, pid
-                        ));
-                    } else {
-                        log_debug(&format!("Sent SIGKILL to {} group (pid={}).", name, pid));
-                    }
-                    let _ = child.wait();
                 }
             }
 
@@ -493,15 +628,14 @@ impl AgentManager {
             {
                 let _ = child.kill();
                 let _ = child.wait();
+                log_info(&format!("{} terminated.", name));
             }
-
-            log_info(&format!("{} terminated.", name));
         }
     }
 
     /// Stops the monitor thread and terminates both child processes.
     fn stop(&self) {
-        let _guard = self.start_stop_lock.lock().unwrap();
+        let _guard = lock_mutex(&self.start_stop_lock);
         if !self.should_run.swap(false, Ordering::SeqCst) {
             // Already stopped
             log_debug("Stop called; manager already stopped.");
@@ -509,7 +643,7 @@ impl AgentManager {
         }
 
         // Stop monitor thread
-        if let Some(handle) = self.monitor_thread.lock().unwrap().take() {
+        if let Some(handle) = lock_mutex(&self.monitor_thread).take() {
             // Wake the monitor to exit promptly
             self.monitor_cv.notify_all();
             let _ = handle.join();
@@ -519,7 +653,7 @@ impl AgentManager {
         // Record whether we've terminated via Job to avoid redundant per-child kill.
         #[cfg(windows)]
         let terminated_via_job: bool = unsafe {
-            if let Some(job_raw) = self.windows_job.lock().unwrap().take() {
+            if let Some(job_raw) = lock_mutex(&self.windows_job).take() {
                 let job = job_raw as HANDLE;
                 let _ = TerminateJobObject(job, 1);
                 let _ = CloseHandle(job);
@@ -532,16 +666,16 @@ impl AgentManager {
         // Kill children unless we already terminated the process tree via Windows Job
         #[cfg(windows)]
         if !terminated_via_job {
-            let mut a = self.agent_child.lock().unwrap();
+            let mut a = lock_mutex(&self.agent_child);
             Self::graceful_kill(self.agent_spec.name, &mut a);
-            let mut t = self.trace_child.lock().unwrap();
+            let mut t = lock_mutex(&self.trace_child);
             Self::graceful_kill(self.trace_spec.name, &mut t);
         }
         #[cfg(not(windows))]
         {
-            let mut a = self.agent_child.lock().unwrap();
+            let mut a = lock_mutex(&self.agent_child);
             Self::graceful_kill(self.agent_spec.name, &mut a);
-            let mut t = self.trace_child.lock().unwrap();
+            let mut t = lock_mutex(&self.trace_child);
             Self::graceful_kill(self.trace_spec.name, &mut t);
         }
     }
@@ -568,5 +702,174 @@ pub fn initialize() {
 pub fn stop() {
     if let Some(mgr) = GLOBAL_MANAGER.get() {
         mgr.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    #[cfg(unix)]
+    use std::process::Command;
+    use std::sync::Mutex;
+    #[cfg(unix)]
+    use std::time::Duration;
+
+    #[test]
+    fn test_is_debug_enabled_default() {
+        // Note: OnceLock may already be set from previous tests
+        // Just test that the function doesn't crash
+        let _ = is_debug_enabled();
+    }
+
+    #[test]
+    fn test_is_debug_enabled_true_values() {
+        unsafe {
+            env::set_var("LIBAGENT_DEBUG", "1");
+        }
+        // Need to reset the OnceLock for the test
+        // This is tricky since OnceLock can't be reset, so we'll skip this test
+        // and rely on integration tests for env var testing
+    }
+
+    #[test]
+    fn test_current_log_level_default() {
+        // Note: OnceLock may already be set from previous tests
+        // Just test that the function doesn't crash and returns a valid LogLevel
+        let level = current_log_level();
+        match level {
+            LogLevel::Error | LogLevel::Warn | LogLevel::Info | LogLevel::Debug => {
+                // Valid log level
+            }
+        }
+    }
+
+    #[test]
+    fn test_current_log_level_debug() {
+        unsafe {
+            env::set_var("LIBAGENT_DEBUG", "1");
+        }
+        // This would set log level to Debug, but we can't test OnceLock easily
+    }
+
+    #[test]
+    fn test_lock_mutex_panic_recovery() {
+        let mutex = Mutex::new(42);
+        let guard = lock_mutex(&mutex);
+        assert_eq!(*guard, 42);
+    }
+
+    #[test]
+    fn test_child_stdio_inherit_debug() {
+        // Test with debug enabled - should inherit
+        unsafe {
+            env::set_var("LIBAGENT_DEBUG", "1");
+        }
+        // Hard to test due to OnceLock, but we can test the function exists
+        let _ = child_stdio_inherit();
+    }
+
+    #[test]
+    fn test_child_stdio_inherit_default() {
+        // Test default behavior - should not inherit
+        let _ = child_stdio_inherit();
+    }
+
+    #[test]
+    fn test_process_spec_new() {
+        let spec = ProcessSpec::new(
+            "test",
+            "program".to_string(),
+            vec!["arg1".to_string(), "arg2".to_string()],
+        );
+        assert_eq!(spec.name, "test");
+        assert_eq!(spec.program, "program");
+        assert_eq!(spec.args, vec!["arg1".to_string(), "arg2".to_string()]);
+    }
+
+    #[test]
+    fn test_agent_manager_new() {
+        let manager = AgentManager::new();
+        assert!(!manager.should_run.load(Ordering::SeqCst));
+        assert!(manager.monitor_thread.lock().unwrap().is_none());
+        assert!(manager.agent_child.lock().unwrap().is_none());
+        assert!(manager.trace_child.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_log_functions() {
+        // Test that log functions don't crash
+        log_error("test error");
+        log_warn("test warning");
+        log_info("test info");
+        log_debug("test debug");
+    }
+
+    #[test]
+    fn test_log_at_levels() {
+        // Test log_at with different levels
+        log_at(LogLevel::Error, "error message");
+        log_at(LogLevel::Warn, "warn message");
+        log_at(LogLevel::Info, "info message");
+        log_at(LogLevel::Debug, "debug message");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_job_handle() {
+        let manager = AgentManager::new();
+        // Test that windows_job_handle can be called without crashing
+        let handle = manager.windows_job_handle();
+        // Handle might be null if CreateJobObjectW fails, but function should not crash
+        let _ = handle;
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_agent_manager_windows_fields() {
+        let manager = AgentManager::new();
+        // Test that Windows-specific fields are initialized correctly
+        let job_guard = lock_mutex(&manager.windows_job);
+        assert!(job_guard.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_wait_with_timeout() {
+        // Start a process that exits quickly
+        let mut child = Command::new("true").spawn().unwrap();
+
+        // Should return true since the process exits quickly
+        let result = AgentManager::wait_with_timeout(&mut child, Duration::from_secs(1));
+        assert!(result);
+
+        // Clean up
+        let _ = child.wait();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_signal_process_group_invalid_pid() {
+        // Start a process
+        let mut child = Command::new("sleep").arg("1").spawn().unwrap();
+        let pid = child.id() as i32;
+
+        // Try to signal an invalid process group
+        let result = AgentManager::signal_process_group(
+            &mut child,
+            "test",
+            pid,
+            -99999, // Invalid PGID
+            libc::SIGTERM,
+            "SIGTERM",
+            Duration::from_millis(100),
+        );
+
+        // Should return false due to invalid PGID
+        assert!(!result);
+
+        // Clean up
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }

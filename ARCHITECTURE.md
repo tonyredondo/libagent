@@ -75,6 +75,7 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 - A Job Object is created and configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
 - Each child process is assigned to the Job; on stop, the Job is terminated to kill the entire tree, and the handle is closed.
 - `CreateJobObjectW` is declared via an `unsafe extern "system"` block to maintain compatibility across `windows-sys` versions.
+ - Note: the Windows Named Pipe HTTP client enforces request timeouts using a separate thread with cancellation support (default: 50 seconds).
 
 ## Configuration
 - Defaults live in `src/config.rs`:
@@ -100,15 +101,16 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 - FFI functions catch panics with `catch_unwind` to prevent unwinding across the FFI boundary.
 
 ## FFI Surface
-- C API: `Initialize(void)`, `Stop(void)`, and `ProxyTraceAgentUds(...)` (see `include/libagent.h`).
+- C API: `Initialize(void)`, `Stop(void)`, and `ProxyTraceAgent(...)` (see `include/libagent.h`).
 - Rust nightly 2024 uses `#[unsafe(no_mangle)]` on FFI exports to match the current toolchain.
 
 ### Trace Agent Proxy
 - Purpose: allow embedding consumers to proxy HTTP requests to the trace-agent over a local IPC transport without linking HTTP client code.
-- Exported function: `int32_t ProxyTraceAgentUds(const char* method, const char* path, const char* headers, const uint8_t* body_ptr, size_t body_len, LibagentHttpResponse** out_resp, char** out_err)`.
+- Exported function: `int32_t ProxyTraceAgent(const char* method, const char* path, const char* headers, const uint8_t* body_ptr, size_t body_len, LibagentHttpResponse** out_resp, char** out_err)`.
 - Path resolution:
   - Unix: UDS socket via `LIBAGENT_TRACE_AGENT_UDS` (default `/var/run/datadog/apm.socket`).
   - Windows: Named pipe via `LIBAGENT_TRACE_AGENT_PIPE` (default `trace-agent`, full `\\.\\pipe\\trace-agent`).
+- Timeout: 50 seconds for both Unix UDS and Windows Named Pipe connections.
 - Request shape: headers are a single string with lines `Name: Value` separated by `\n` or `\r\n`; body is an optional byte slice.
 - Response: status (u16), headers (CRLF-joined lines), body (bytes). Free with `FreeHttpResponse`.
 - Protocol support: HTTP/1.1 with `Content-Length` and `Transfer-Encoding: chunked` responses.
@@ -120,7 +122,8 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 - Cross‑platform coverage:
   - Unix: start/stop lifecycle and respawn/backoff behavior.
   - Unix: UDS proxy (basic + chunked) in `tests/uds_proxy.rs` (skips under sandboxed environments which deny UDS binds).
-  - Windows: sanity check that Job-based shutdown works.
+  - Windows: sanity check that Job-based shutdown works in `tests/windows_sanity.rs`.
+  - Windows: Named Pipe proxy (basic + chunked) in `tests/windows_pipe_proxy.rs`.
 
 ## When to Update This Doc
 - Changing process lifecycle or shutdown semantics in `src/manager.rs`.

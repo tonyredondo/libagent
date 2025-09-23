@@ -16,6 +16,7 @@
 
 mod config;
 mod ffi;
+mod http;
 mod manager;
 mod uds;
 #[cfg(windows)]

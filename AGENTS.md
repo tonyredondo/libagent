@@ -3,8 +3,8 @@
 ## Project Structure & Module Organization
 - For a deeper architectural description (lifecycle, backoff, platform specifics), see ARCHITECTURE.md.
 - `src/` — core library code:
-  - `lib.rs` (public API: `initialize`, `stop`), `ffi.rs` (C FFI: `Initialize`, `Stop`, `ProxyTraceAgentUds`), `manager.rs` (process lifecycle), `config.rs` (constants/env overrides), `uds.rs` (HTTP-over-UDS client), `winpipe.rs` (HTTP-over-Windows-Named-Pipe client).
-- `tests/` — integration tests (`respawn.rs`, `idempotent.rs`, `start_stop_unix.rs`, `windows_sanity.rs`) plus helpers in `tests/common/`.
+  - `lib.rs` (public API: `initialize`, `stop`), `ffi.rs` (C FFI: `Initialize`, `Stop`, `ProxyTraceAgent`), `manager.rs` (process lifecycle), `config.rs` (constants/env overrides), `http.rs` (shared HTTP parsing utilities), `uds.rs` (HTTP-over-UDS client), `winpipe.rs` (HTTP-over-Windows-Named-Pipe client).
+- `tests/` — integration tests (`respawn.rs`, `idempotent.rs`, `start_stop_unix.rs`, `uds_proxy.rs`, `windows_pipe_proxy.rs`, `windows_sanity.rs`) plus helpers in `tests/common/`.
 - `.github/workflows/ci.yml` — GitHub Actions (Linux, macOS, Windows; nightly toolchain).
 - `target/` — build artifacts.
 
@@ -12,7 +12,7 @@
 - Install nightly: `rustup toolchain install nightly`.
 - Build (debug/release): `cargo +nightly build` / `cargo +nightly build --release`.
 - Test (show logs): `LIBAGENT_LOG=debug cargo +nightly test -- --nocapture`.
-- Format: `cargo fmt --all`.
+- Format: `cargo +nightly fmt --all` (use nightly to match CI formatting rules).
 - Lint (recommended): `cargo +nightly clippy --all-targets -- -D warnings`.
 
 Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
@@ -30,15 +30,20 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 - Run locally with `cargo +nightly test`; CI runs on all three OSes.
 - Rust 2024/`nightly`: environment mutations are `unsafe`. Wrap `env::set_var`/`env::remove_var` in `unsafe { ... }` in tests, and keep tests `#[serial]` to avoid races.
  - UDS proxy tests: see `tests/uds_proxy.rs` (basic and chunked). Tests skip gracefully if UDS bind is denied by the environment.
+ - Windows Named Pipe proxy tests: see `tests/windows_pipe_proxy.rs` (basic and chunked).
 
 ## Commit & Pull Request Guidelines
 - Use Conventional Commits (e.g., `feat:`, `fix:`, `test:`, `chore:`). Keep subject ≤72 chars; add a focused body when helpful.
 - In PRs: describe motivation and approach, link issues, include test updates/new tests, and note platform implications (Unix/Windows).
-- Ensure `cargo fmt`, `cargo +nightly clippy`, and `cargo +nightly test` pass before requesting review.
+- **Quality Enforcement**: All changes must pass the following checks before committing or requesting review:
+  - `cargo +nightly fmt --all -- --check` (code formatting - uses nightly to match CI)
+  - `cargo +nightly clippy --all-targets -- -D warnings` (linting)
+  - `cargo +nightly test -- --nocapture` (full test suite)
+- Never commit code that fails these checks. Use pre-commit hooks or CI to enforce compliance.
 
 ## Security & Configuration Tips
 - Default programs/args live in `src/config.rs`. Runtime overrides (for dev/tests): `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`, `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`, `LIBAGENT_MONITOR_INTERVAL_SECS`, `LIBAGENT_LOG`, `LIBAGENT_DEBUG`.
-- UDS proxy: `LIBAGENT_TRACE_AGENT_UDS` overrides the Unix socket path used by `ProxyTraceAgentUds` (default: `/var/run/datadog/apm.socket`).
+- UDS proxy: `LIBAGENT_TRACE_AGENT_UDS` overrides the Unix socket path used by `ProxyTraceAgent` (default: `/var/run/datadog/apm.socket`).
 - Windows Named Pipe proxy: `LIBAGENT_TRACE_AGENT_PIPE` overrides the pipe name used by `ProxyTraceAgent` on Windows (default: `trace-agent`, full path: `\\.\\pipe\\trace-agent`).
 - `*_ARGS` values are parsed using shell-words. Quote arguments as you would in a shell (e.g., `LIBAGENT_AGENT_ARGS='-c "my arg"'`).
 - Example: `LIBAGENT_LOG=debug LIBAGENT_MONITOR_INTERVAL_SECS=1 cargo +nightly test -- --nocapture`.
@@ -50,9 +55,10 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 - Optional feature: enable `--features log` to route logs through the `log` crate instead of stderr. You may run tests with logging enabled: `cargo +nightly test --features log -- --nocapture`.
 
 ### UDS Proxy FFI
-- New export: `ProxyTraceAgentUds(...)` proxies an HTTP request over a Unix Domain Socket to the trace-agent and returns the raw HTTP status, headers, and body.
+- New export: `ProxyTraceAgent(...)` proxies an HTTP request over an IPC transport to the trace-agent and returns the raw HTTP status, headers, and body. On Unix this uses UDS; on Windows it uses Named Pipes.
+- Windows note: the named-pipe client enforces request timeouts using a separate thread with cancellation support (default: 50 seconds).
 - See `include/libagent.h` for the C types `LibagentHttpBuffer` and `LibagentHttpResponse` and free helpers `FreeHttpBuffer`, `FreeHttpResponse`, `FreeCString`.
-- On non-Unix platforms, the function returns an error.
+- On unsupported platforms, the function returns an error.
 
 ## Platform Notes
 - Windows process management uses Job Objects for reliable termination of the child tree. For compatibility across `windows-sys` versions, `CreateJobObjectW` is declared via an `unsafe extern "system"` block; do not change its import path without verifying CI across OS/toolchains.

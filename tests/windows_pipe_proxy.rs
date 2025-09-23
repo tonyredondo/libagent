@@ -183,6 +183,11 @@ fn windows_pipe_proxy_basic() {
         FreeHttpResponse(resp_ptr);
     }
     let _ = th.join();
+
+    // Clean up environment variable
+    unsafe {
+        env::remove_var("LIBAGENT_TRACE_AGENT_PIPE");
+    }
 }
 
 #[test]
@@ -299,4 +304,9 @@ fn windows_pipe_proxy_chunked() {
         FreeHttpResponse(resp_ptr);
     }
     let _ = th.join();
+
+    // Clean up environment variable
+    unsafe {
+        env::remove_var("LIBAGENT_TRACE_AGENT_PIPE");
+    }
 }

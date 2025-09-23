@@ -59,7 +59,16 @@ pub fn get_agent_program() -> String {
 /// The override is parsed using shell-style splitting.
 pub fn get_agent_args() -> Vec<String> {
     match std::env::var(ENV_AGENT_ARGS) {
-        Ok(val) => shell_words::split(val.trim()).unwrap_or_default(),
+        Ok(val) => match shell_words::split(val.trim()) {
+            Ok(args) => args,
+            Err(e) => {
+                eprintln!(
+                    "[libagent] WARN: Failed to parse {} '{}': {}. Using default args",
+                    ENV_AGENT_ARGS, val, e
+                );
+                AGENT_ARGS.iter().map(|s| s.to_string()).collect()
+            }
+        },
         Err(_) => AGENT_ARGS.iter().map(|s| s.to_string()).collect(),
     }
 }
@@ -72,7 +81,16 @@ pub fn get_trace_agent_program() -> String {
 /// Returns trace agent args, allowing env override via `LIBAGENT_TRACE_AGENT_ARGS`.
 pub fn get_trace_agent_args() -> Vec<String> {
     match std::env::var(ENV_TRACE_AGENT_ARGS) {
-        Ok(val) => shell_words::split(val.trim()).unwrap_or_default(),
+        Ok(val) => match shell_words::split(val.trim()) {
+            Ok(args) => args,
+            Err(e) => {
+                eprintln!(
+                    "[libagent] WARN: Failed to parse {} '{}': {}. Using default args",
+                    ENV_TRACE_AGENT_ARGS, val, e
+                );
+                TRACE_AGENT_ARGS.iter().map(|s| s.to_string()).collect()
+            }
+        },
         Err(_) => TRACE_AGENT_ARGS.iter().map(|s| s.to_string()).collect(),
     }
 }
@@ -80,7 +98,16 @@ pub fn get_trace_agent_args() -> Vec<String> {
 /// Returns monitor interval in seconds, allowing env override via `LIBAGENT_MONITOR_INTERVAL_SECS`.
 pub fn get_monitor_interval_secs() -> u64 {
     match std::env::var(ENV_MONITOR_INTERVAL_SECS) {
-        Ok(val) => val.parse::<u64>().unwrap_or(MONITOR_INTERVAL_SECS),
+        Ok(val) => match val.parse::<u64>() {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                eprintln!(
+                    "[libagent] WARN: Invalid {} '{}': {}. Using default value {}s",
+                    ENV_MONITOR_INTERVAL_SECS, val, e, MONITOR_INTERVAL_SECS
+                );
+                MONITOR_INTERVAL_SECS
+            }
+        },
         Err(_) => MONITOR_INTERVAL_SECS,
     }
 }
@@ -103,4 +130,205 @@ pub(crate) const TRACE_AGENT_PIPE_DEFAULT: &str = "trace-agent";
 #[cfg(windows)]
 pub fn get_trace_agent_pipe_name() -> String {
     std::env::var(ENV_TRACE_AGENT_PIPE).unwrap_or_else(|_| TRACE_AGENT_PIPE_DEFAULT.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    fn test_get_agent_program_default() {
+        // Test default value
+        let program = get_agent_program();
+        assert_eq!(program, AGENT_PROGRAM);
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_agent_program_override() {
+        unsafe {
+            std::env::set_var(ENV_AGENT_PROGRAM, "/custom/path/agent");
+        }
+        let program = get_agent_program();
+        assert_eq!(program, "/custom/path/agent");
+        unsafe {
+            std::env::remove_var(ENV_AGENT_PROGRAM);
+        }
+    }
+
+    #[test]
+    fn test_get_agent_args_default() {
+        // Test default value
+        let args = get_agent_args();
+        assert_eq!(
+            args,
+            AGENT_ARGS.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_agent_args_override() {
+        unsafe {
+            std::env::set_var(ENV_AGENT_ARGS, "--config /path/to/config --verbose");
+        }
+        let args = get_agent_args();
+        assert_eq!(
+            args,
+            vec![
+                "--config".to_string(),
+                "/path/to/config".to_string(),
+                "--verbose".to_string()
+            ]
+        );
+        unsafe {
+            std::env::remove_var(ENV_AGENT_ARGS);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_agent_args_invalid_shell_words() {
+        unsafe {
+            std::env::set_var(ENV_AGENT_ARGS, "\"unclosed quote");
+        }
+        let args = get_agent_args();
+        // Should return empty vec on parse error
+        assert_eq!(args, Vec::<String>::new());
+        unsafe {
+            std::env::remove_var(ENV_AGENT_ARGS);
+        }
+    }
+
+    #[test]
+    fn test_get_trace_agent_program_default() {
+        // Test default value
+        let program = get_trace_agent_program();
+        assert_eq!(program, TRACE_AGENT_PROGRAM);
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_trace_agent_program_override() {
+        unsafe {
+            std::env::set_var(ENV_TRACE_AGENT_PROGRAM, "/custom/trace-agent");
+        }
+        let program = get_trace_agent_program();
+        assert_eq!(program, "/custom/trace-agent");
+        unsafe {
+            std::env::remove_var(ENV_TRACE_AGENT_PROGRAM);
+        }
+    }
+
+    #[test]
+    fn test_get_trace_agent_args_default() {
+        // Test default value
+        let args = get_trace_agent_args();
+        assert_eq!(
+            args,
+            TRACE_AGENT_ARGS
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_trace_agent_args_override() {
+        unsafe {
+            std::env::set_var(ENV_TRACE_AGENT_ARGS, "--port 8126 --debug");
+        }
+        let args = get_trace_agent_args();
+        assert_eq!(
+            args,
+            vec![
+                "--port".to_string(),
+                "8126".to_string(),
+                "--debug".to_string()
+            ]
+        );
+        unsafe {
+            std::env::remove_var(ENV_TRACE_AGENT_ARGS);
+        }
+    }
+
+    #[test]
+    fn test_get_monitor_interval_secs_default() {
+        // Test default value
+        let interval = get_monitor_interval_secs();
+        assert_eq!(interval, MONITOR_INTERVAL_SECS);
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_monitor_interval_secs_override() {
+        unsafe {
+            std::env::set_var(ENV_MONITOR_INTERVAL_SECS, "5");
+        }
+        let interval = get_monitor_interval_secs();
+        assert_eq!(interval, 5);
+        unsafe {
+            std::env::remove_var(ENV_MONITOR_INTERVAL_SECS);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_monitor_interval_secs_invalid() {
+        unsafe {
+            std::env::set_var(ENV_MONITOR_INTERVAL_SECS, "not-a-number");
+        }
+        let interval = get_monitor_interval_secs();
+        // Should fall back to default on parse error
+        assert_eq!(interval, MONITOR_INTERVAL_SECS);
+        unsafe {
+            std::env::remove_var(ENV_MONITOR_INTERVAL_SECS);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_get_trace_agent_uds_path_default() {
+        // Test default value
+        let path = get_trace_agent_uds_path();
+        assert_eq!(path, TRACE_AGENT_UDS_DEFAULT);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn test_get_trace_agent_uds_path_override() {
+        unsafe {
+            std::env::set_var(ENV_TRACE_AGENT_UDS, "/tmp/custom.socket");
+        }
+        let path = get_trace_agent_uds_path();
+        assert_eq!(path, "/tmp/custom.socket");
+        unsafe {
+            std::env::remove_var(ENV_TRACE_AGENT_UDS);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_get_trace_agent_pipe_name_default() {
+        // Test default value
+        let name = get_trace_agent_pipe_name();
+        assert_eq!(name, TRACE_AGENT_PIPE_DEFAULT);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[serial]
+    fn test_get_trace_agent_pipe_name_override() {
+        unsafe {
+            std::env::set_var(ENV_TRACE_AGENT_PIPE, "custom-pipe");
+        }
+        let name = get_trace_agent_pipe_name();
+        assert_eq!(name, "custom-pipe");
+        unsafe {
+            std::env::remove_var(ENV_TRACE_AGENT_PIPE);
+        }
+    }
 }

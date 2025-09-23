@@ -1,6 +1,7 @@
 # libagent
 
 [![CI](https://github.com/tonyredondo/libagent/actions/workflows/ci.yml/badge.svg)](https://github.com/tonyredondo/libagent/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/tonyredondo/libagent/branch/main/graph/badge.svg)](https://codecov.io/gh/tonyredondo/libagent)
 ![Rust nightly](https://img.shields.io/badge/rust-nightly-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-informational)
 
@@ -25,7 +26,7 @@ Outputs include a Rust `rlib` and a shared library (`.so/.dylib/.dll`) per the c
   - Unix: children run in their own session (`setsid`); sends `SIGTERM`, then `SIGKILL` to the process group on shutdown.
   - Windows: assigns children to a Job; terminating the Job kills the tree.
 - Configuration (`config.rs`): compile-time defaults with env overrides parsed via `shell-words`; tunables include programs, args, and monitor interval.
-- FFI (`ffi.rs`): exports `Initialize`, `Stop`, and a transport-agnostic trace-agent proxy (`ProxyTraceAgentUds`) with `catch_unwind`.
+- FFI (`ffi.rs`): exports `Initialize`, `Stop`, and a transport-agnostic trace-agent proxy (`ProxyTraceAgent`) with `catch_unwind`.
   - Unix: connects over UDS.
   - Windows: connects over Windows Named Pipes.
 - Logging: `LIBAGENT_LOG` level and `LIBAGENT_DEBUG` to inherit child stdout/stderr.
@@ -84,13 +85,15 @@ int main(void) {
 }
 ```
 
-UDS proxy notes:
+Proxy notes:
 - Socket path resolution (Unix): env `LIBAGENT_TRACE_AGENT_UDS` or default `/var/run/datadog/apm.socket`.
+- Pipe name resolution (Windows): env `LIBAGENT_TRACE_AGENT_PIPE` or default `trace-agent` (full path: `\\.\\pipe\\trace-agent`).
+- Timeout: 50 seconds for both Unix UDS and Windows Named Pipe connections.
 - `headers`: string with lines `Name: Value` separated by `\n` or `\r\n`.
 - `out_resp->headers`: same format, concatenated CRLF lines; free with `FreeHttpBuffer` via `FreeHttpResponse`.
 - Free all allocated outputs with the provided free functions.
 
-Notes: The FFI functions return `void`. Operational errors are logged; panics in Rust are caught with `catch_unwind` to avoid unwinding across the FFI boundary.
+Notes: The `Initialize` and `Stop` FFI functions return `void`. The `ProxyTraceAgent` function returns an `int32_t` error code (0 for success, negative for errors). Operational errors are logged; panics in Rust are caught with `catch_unwind` to avoid unwinding across the FFI boundary.
 
 ## Configuration
 Defaults live in `src/config.rs`. Override at runtime via environment variables:
@@ -139,10 +142,11 @@ cbindgen --config cbindgen.toml --crate libagent --output include/libagent.h
 
 ## Trace Agent Proxy (UDS/Named Pipe)
 - Purpose: allow embedding hosts to call the trace-agent HTTP API without bundling an HTTP client.
-- Function: `ProxyTraceAgentUds(method, path, headers, body_ptr, body_len, out_resp, out_err)`.
+- Function: `ProxyTraceAgent(method, path, headers, body_ptr, body_len, out_resp, out_err)`.
 - Transport:
   - Unix: UDS. Path from env `LIBAGENT_TRACE_AGENT_UDS` or default `/var/run/datadog/apm.socket`.
   - Windows: Named Pipe. Pipe name from env `LIBAGENT_TRACE_AGENT_PIPE` or default `trace-agent`. Full path: `\\.\\pipe\\trace-agent`.
+- Timeout: 50 seconds for both Unix UDS and Windows Named Pipe connections.
 - Headers format: one string with lines `Name: Value` separated by `\n` or `\r\n`.
 - Response: status (u16), headers (CRLF-joined lines), body (bytes). Free with `FreeHttpResponse`.
 - Protocols: supports `Content-Length` and `Transfer-Encoding: chunked` responses.
@@ -150,6 +154,8 @@ cbindgen --config cbindgen.toml --crate libagent --output include/libagent.h
 ## Testing
 Run the cross‑platform integration suite:
 - `cargo +nightly test -- --nocapture`
+
+Code coverage reports are automatically generated in CI and uploaded to [Codecov](https://codecov.io/gh/tonyredondo/libagent).
 
 Examples in multiple languages are under `examples/` (C, Go, Java/JNA, .NET, Node.js, Python, Ruby). See `examples/README.md` for build/run tips.
 

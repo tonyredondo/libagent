@@ -1,6 +1,6 @@
-Examples: Calling the UDS Proxy FFI (Unix-only)
+Examples: Calling the Trace Agent Proxy FFI
 
-These examples show how to call `ProxyTraceAgentUds` from various languages to proxy an HTTP request over a Unix Domain Socket (UDS) to the Datadog trace-agent.
+These examples show how to call `ProxyTraceAgent` from various languages to proxy an HTTP request over a local IPC transport to the Datadog trace-agent.
 
 Prerequisites
 - Build the library: `cargo +nightly build` (or `--release`).
@@ -8,10 +8,11 @@ Prerequisites
   - Linux: export `LD_LIBRARY_PATH=target/debug` (or `target/release`).
   - macOS: export `DYLD_LIBRARY_PATH=target/debug` (or `target/release`).
 - Socket path (Unix): set `LIBAGENT_TRACE_AGENT_UDS` to your trace-agent UDS path if not using the default `/var/run/datadog/apm.socket`.
+- Windows Named Pipe: set `LIBAGENT_TRACE_AGENT_PIPE` to the pipe name (default `trace-agent`). Timeout is enforced using a separate thread with cancellation (default: 50 seconds).
 
 Notes
 - The examples call `GET /info` with `Accept: application/json` to avoid sending large payloads.
-- Unix-only: on non‑Unix platforms the function returns an error.
+- Cross-platform: works on Unix (UDS) and Windows (Named Pipes) platforms.
 
 ---
 
@@ -19,9 +20,9 @@ C (examples/c/uds_proxy.c)
 
 Compile (Linux/macOS):
 
-clang -I include -L target/debug -lagent examples/c/uds_proxy.c -o examples/c/uds_proxy
+clang -I include -L target/debug -llibagent examples/c/uds_proxy.c -o examples/c/uds_proxy
 
-Run:
+Run (Unix UDS):
 
 DYLD_LIBRARY_PATH=target/debug \
 LIBAGENT_TRACE_AGENT_UDS=/var/run/datadog/apm.socket \
