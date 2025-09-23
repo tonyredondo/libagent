@@ -12,8 +12,9 @@ This document explains how libagent is structured, how it manages the Agent and 
 - Public API: `src/lib.rs` re-exports `initialize`/`stop` and registers a destructor that calls `stop` on unload.
 - Process Manager: `src/manager.rs` implements spawn, monitoring/respawn, and shutdown.
 - Configuration: `src/config.rs` contains defaults and environment variable overrides (parsed with shell-words).
-- FFI: `src/ffi.rs` exposes `Initialize`, `Stop`, and the UDS proxy API; see `include/libagent.h`.
+- FFI: `src/ffi.rs` exposes `Initialize`, `Stop`, and the transport-agnostic trace-agent proxy; see `include/libagent.h`.
 - UDS HTTP client: `src/uds.rs` implements a minimal HTTP/1.1 client over Unix Domain Sockets used by the proxy.
+- Windows Named Pipe client: `src/winpipe.rs` implements HTTP/1.1 over Windows Named Pipes used by the proxy.
 
 ## Lifecycle
 1. Initialize: `initialize()` sets up a singleton `AgentManager` and starts both processes immediately, then launches a monitor thread.
@@ -84,7 +85,9 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
   - `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`
   - `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`
   - `LIBAGENT_MONITOR_INTERVAL_SECS`
-  - UDS proxy path (Unix): `LIBAGENT_TRACE_AGENT_UDS` (default: `/var/run/datadog/apm.socket`)
+  - Transport endpoints:
+    - Unix UDS: `LIBAGENT_TRACE_AGENT_UDS` (default: `/var/run/datadog/apm.socket`)
+    - Windows Named Pipe: `LIBAGENT_TRACE_AGENT_PIPE` (default: `trace-agent`, full path `\\.\\pipe\\trace-agent`)
 - Example: `LIBAGENT_AGENT_ARGS='-c "quoted arg"'`
 
 ## Logging
@@ -100,14 +103,16 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 - C API: `Initialize(void)`, `Stop(void)`, and `ProxyTraceAgentUds(...)` (see `include/libagent.h`).
 - Rust nightly 2024 uses `#[unsafe(no_mangle)]` on FFI exports to match the current toolchain.
 
-### UDS Proxy (Trace Agent)
-- Purpose: allow embedding consumers to proxy HTTP requests to the trace-agent over a Unix Domain Socket (UDS) without linking HTTP client code.
+### Trace Agent Proxy
+- Purpose: allow embedding consumers to proxy HTTP requests to the trace-agent over a local IPC transport without linking HTTP client code.
 - Exported function: `int32_t ProxyTraceAgentUds(const char* method, const char* path, const char* headers, const uint8_t* body_ptr, size_t body_len, LibagentHttpResponse** out_resp, char** out_err)`.
-- Path resolution (Unix): socket path = env `LIBAGENT_TRACE_AGENT_UDS` or default `/var/run/datadog/apm.socket`.
+- Path resolution:
+  - Unix: UDS socket via `LIBAGENT_TRACE_AGENT_UDS` (default `/var/run/datadog/apm.socket`).
+  - Windows: Named pipe via `LIBAGENT_TRACE_AGENT_PIPE` (default `trace-agent`, full `\\.\\pipe\\trace-agent`).
 - Request shape: headers are a single string with lines `Name: Value` separated by `\n` or `\r\n`; body is an optional byte slice.
 - Response: status (u16), headers (CRLF-joined lines), body (bytes). Free with `FreeHttpResponse`.
 - Protocol support: HTTP/1.1 with `Content-Length` and `Transfer-Encoding: chunked` responses.
-- Platform: Unix only; on non‑Unix, the function returns an error.
+- Platform: Unix (UDS) and Windows (Named Pipes).
 
 ## Testing Strategy
 - Integration tests under `tests/` use temporary stub scripts to simulate child behavior.

@@ -22,7 +22,7 @@ func main() {
 
     var resp *C.LibagentHttpResponse
     var errStr *C.char
-    rc := C.ProxyTraceAgentUds(method, path, headers, nil, 0, &resp, &errStr)
+    rc := C.ProxyTraceAgent(method, path, headers, nil, 0, &resp, &errStr)
     if rc != 0 {
         if errStr != nil {
             fmt.Printf("error: %s\n", C.GoString(errStr))
@@ -38,4 +38,3 @@ func main() {
     fmt.Printf("Headers:\n%s\n", string(hdr))
     fmt.Printf("Body:\n%s\n", string(body))
 }
-

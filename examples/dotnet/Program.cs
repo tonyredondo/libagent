@@ -19,8 +19,8 @@ static class Native
         public LibagentHttpBuffer body;
     }
 
-    [DllImport("libagent", EntryPoint = "ProxyTraceAgentUds", CharSet = CharSet.Ansi)]
-    public static extern int ProxyTraceAgentUds(
+    [DllImport("libagent", EntryPoint = "ProxyTraceAgent", CharSet = CharSet.Ansi)]
+    public static extern int ProxyTraceAgent(
         string method,
         string path,
         string headers,
@@ -42,7 +42,7 @@ class Program
     {
         IntPtr respPtr;
         IntPtr errPtr;
-        int rc = Native.ProxyTraceAgentUds("GET", "/info", "Accept: application/json\n", IntPtr.Zero, UIntPtr.Zero, out respPtr, out errPtr);
+        int rc = Native.ProxyTraceAgent("GET", "/info", "Accept: application/json\n", IntPtr.Zero, UIntPtr.Zero, out respPtr, out errPtr);
         if (rc != 0)
         {
             if (errPtr != IntPtr.Zero)
@@ -76,4 +76,3 @@ class Program
         Native.FreeHttpResponse(respPtr);
     }
 }
-

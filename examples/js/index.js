@@ -21,7 +21,7 @@ const LibagentHttpResponse = Struct({
 });
 
 const lib = ffi.Library('libagent', {
-  'ProxyTraceAgentUds': ['int32', ['string', 'string', 'string', voidPtr, size_t, ref.refType(ref.refType(LibagentHttpResponse)), ref.refType(charPtr)]],
+  'ProxyTraceAgent': ['int32', ['string', 'string', 'string', voidPtr, size_t, ref.refType(ref.refType(LibagentHttpResponse)), ref.refType(charPtr)]],
   'FreeHttpResponse': ['void', [ref.refType(LibagentHttpResponse)]],
   'FreeCString': ['void', [charPtr]],
 });
@@ -30,7 +30,7 @@ function main() {
   const outRespPtr = ref.alloc(ref.refType(LibagentHttpResponse));
   const outErrPtr = ref.alloc(charPtr);
 
-  const rc = lib.ProxyTraceAgentUds('GET', '/info', 'Accept: application/json\n', ref.NULL, 0, outRespPtr, outErrPtr);
+  const rc = lib.ProxyTraceAgent('GET', '/info', 'Accept: application/json\n', ref.NULL, 0, outRespPtr, outErrPtr);
   if (rc !== 0) {
     const errPtr = outErrPtr.deref();
     if (!errPtr.isNull()) {
@@ -56,4 +56,3 @@ function main() {
 }
 
 main();
-

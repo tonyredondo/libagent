@@ -47,6 +47,8 @@ const ENV_TRACE_AGENT_ARGS: &str = "LIBAGENT_TRACE_AGENT_ARGS";
 const ENV_MONITOR_INTERVAL_SECS: &str = "LIBAGENT_MONITOR_INTERVAL_SECS";
 #[cfg(unix)]
 const ENV_TRACE_AGENT_UDS: &str = "LIBAGENT_TRACE_AGENT_UDS";
+#[cfg(windows)]
+const ENV_TRACE_AGENT_PIPE: &str = "LIBAGENT_TRACE_AGENT_PIPE";
 
 /// Returns agent program, allowing env override via `LIBAGENT_AGENT_PROGRAM`.
 pub fn get_agent_program() -> String {
@@ -91,4 +93,14 @@ pub(crate) const TRACE_AGENT_UDS_DEFAULT: &str = "/var/run/datadog/apm.socket";
 #[cfg(unix)]
 pub fn get_trace_agent_uds_path() -> String {
     std::env::var(ENV_TRACE_AGENT_UDS).unwrap_or_else(|_| TRACE_AGENT_UDS_DEFAULT.to_string())
+}
+
+/// Default Windows Named Pipe name for the trace agent (used as \\.\\pipe\\<name>).
+#[cfg(windows)]
+pub(crate) const TRACE_AGENT_PIPE_DEFAULT: &str = "trace-agent";
+
+/// Returns trace agent Windows Named Pipe name, allowing env override via `LIBAGENT_TRACE_AGENT_PIPE`.
+#[cfg(windows)]
+pub fn get_trace_agent_pipe_name() -> String {
+    std::env::var(ENV_TRACE_AGENT_PIPE).unwrap_or_else(|_| TRACE_AGENT_PIPE_DEFAULT.to_string())
 }

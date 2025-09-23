@@ -1,15 +1,12 @@
-//! Minimal HTTP-over-UDS client for proxying requests to the trace agent.
+//! Minimal HTTP-over-Windows-Named-Pipe client for proxying requests to the trace agent (Windows).
 //!
-//! This module implements a small HTTP/1.1 client which connects to a Unix
-//! Domain Socket, writes an HTTP request and parses the HTTP response.
-//! It is used by the FFI function `ProxyTraceAgentUds`.
+//! Connects to a Windows Named Pipe (\\.\\pipe\\<name>), writes an HTTP/1.1 request,
+//! and parses the HTTP response. Mirrors the behavior of the Unix UDS client.
 
-#[cfg(unix)]
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
-#[cfg(unix)]
 use std::time::Duration;
 
-#[cfg(unix)]
 #[derive(Debug)]
 pub struct Response {
     pub status: u16,
@@ -17,7 +14,8 @@ pub struct Response {
     pub body: Vec<u8>,
 }
 
-#[cfg(unix)]
+// no need for wide conversions; std::fs::OpenOptions handles wide path internally
+
 fn build_request(
     method: &str,
     path: &str,
@@ -41,7 +39,7 @@ fn build_request(
         headers.push(("Content-Length".to_string(), body.len().to_string()));
     }
     if !has_host {
-        headers.push(("Host".to_string(), "unix".to_string()));
+        headers.push(("Host".to_string(), "pipe".to_string()));
     }
     if !has_connection {
         headers.push(("Connection".to_string(), "close".to_string()));
@@ -63,9 +61,7 @@ fn build_request(
     req
 }
 
-#[cfg(unix)]
 fn parse_status_line(line: &str) -> Result<u16, String> {
-    // Example: HTTP/1.1 200 OK
     let mut parts = line.split_whitespace();
     let proto = parts
         .next()
@@ -82,7 +78,6 @@ fn parse_status_line(line: &str) -> Result<u16, String> {
     Ok(code)
 }
 
-#[cfg(unix)]
 fn parse_headers(raw: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for line in raw.split("\r\n") {
@@ -91,14 +86,13 @@ fn parse_headers(raw: &str) -> Vec<(String, String)> {
         }
         if let Some(idx) = line.find(':') {
             let (name, value) = line.split_at(idx);
-            let value = value[1..].trim_start(); // skip ':' then trim leading spaces
+            let value = value[1..].trim_start();
             out.push((name.to_string(), value.to_string()));
         }
     }
     out
 }
 
-#[cfg(unix)]
 fn header_lookup<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
     let lname = name.to_ascii_lowercase();
     headers
@@ -107,32 +101,7 @@ fn header_lookup<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a 
         .map(|(_, v)| v.as_str())
 }
 
-#[cfg(unix)]
-fn read_until_double_crlf(stream: &mut dyn Read, buf: &mut Vec<u8>) -> Result<usize, String> {
-    // Read until we see \r\n\r\n. Return index after the header end.
-    let mut tmp = [0u8; 1024];
-    loop {
-        if let Some(pos) = memchr_crlf_crlf(buf) {
-            return Ok(pos);
-        }
-        let n = stream
-            .read(&mut tmp)
-            .map_err(|e| format!("read error: {}", e))?;
-        if n == 0 {
-            // EOF before headers complete
-            return Err("unexpected EOF while reading headers".to_string());
-        }
-        buf.extend_from_slice(&tmp[..n]);
-        if buf.len() > 1024 * 1024 {
-            // 1MB header safety cap
-            return Err("headers too large".to_string());
-        }
-    }
-}
-
-#[cfg(unix)]
 fn memchr_crlf_crlf(buf: &[u8]) -> Option<usize> {
-    // Return index of end of header (position just after \r\n\r\n)
     if buf.len() < 4 {
         return None;
     }
@@ -144,7 +113,25 @@ fn memchr_crlf_crlf(buf: &[u8]) -> Option<usize> {
     None
 }
 
-#[cfg(unix)]
+fn read_until_double_crlf(stream: &mut dyn Read, buf: &mut Vec<u8>) -> Result<usize, String> {
+    let mut tmp = [0u8; 1024];
+    loop {
+        if let Some(pos) = memchr_crlf_crlf(buf) {
+            return Ok(pos);
+        }
+        let n = stream
+            .read(&mut tmp)
+            .map_err(|e| format!("read error: {}", e))?;
+        if n == 0 {
+            return Err("unexpected EOF while reading headers".to_string());
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.len() > 1024 * 1024 {
+            return Err("headers too large".to_string());
+        }
+    }
+}
+
 fn read_exact_len(stream: &mut dyn Read, len: usize) -> Result<Vec<u8>, String> {
     let mut out = vec![0u8; len];
     let mut read_total = 0;
@@ -160,16 +147,12 @@ fn read_exact_len(stream: &mut dyn Read, len: usize) -> Result<Vec<u8>, String> 
     Ok(out)
 }
 
-#[cfg(unix)]
 fn read_chunked(stream: &mut dyn Read) -> Result<Vec<u8>, String> {
-    // Very small chunked decoder sufficient for agent responses
     let mut body = Vec::new();
     let mut line_buf = Vec::new();
     let mut tmp = [0u8; 1];
     loop {
-        // read a line with \r\n
         line_buf.clear();
-        // read until CRLF
         let mut last = 0u8;
         loop {
             let n = stream
@@ -185,11 +168,9 @@ fn read_chunked(stream: &mut dyn Read) -> Result<Vec<u8>, String> {
             }
             last = b;
             if line_buf.len() > 1024 {
-                // guard
                 return Err("chunk size line too long".to_string());
             }
         }
-        // line_buf ends with CRLF
         if line_buf.len() < 2 {
             return Err("invalid chunk size line".to_string());
         }
@@ -199,17 +180,12 @@ fn read_chunked(stream: &mut dyn Read) -> Result<Vec<u8>, String> {
         let size = usize::from_str_radix(size_str.trim(), 16)
             .map_err(|_| "invalid chunk size".to_string())?;
         if size == 0 {
-            // read trailing CRLF after 0-size chunk and possible trailers (skip)
-            // consume until we hit CRLF CRLF or EOF
-            // For simplicity, read and discard a final CRLF
-            // Attempt to read two bytes CRLF; ignore errors
             let _ = stream.read(&mut tmp);
             let _ = stream.read(&mut tmp);
             break;
         }
         let mut chunk = read_exact_len(stream, size)?;
         body.append(&mut chunk);
-        // read the trailing CRLF after the chunk
         let mut crlf = [0u8; 2];
         stream
             .read_exact(&mut crlf)
@@ -221,30 +197,35 @@ fn read_chunked(stream: &mut dyn Read) -> Result<Vec<u8>, String> {
     Ok(body)
 }
 
-#[cfg(unix)]
-pub fn request_over_uds(
-    uds_path: &str,
+pub fn request_over_named_pipe(
+    pipe_name: &str,
     method: &str,
     path: &str,
     headers: Vec<(String, String)>,
     body: &[u8],
-    timeout: Duration,
+    _timeout: Duration,
 ) -> Result<Response, String> {
-    use std::os::unix::net::UnixStream;
+    // Compose full pipe path if only name is given
+    let full_path = if pipe_name.starts_with(r"\\.\pipe\") {
+        pipe_name.to_string()
+    } else {
+        format!(r"\\.\pipe\{}", pipe_name)
+    };
 
-    let mut stream = UnixStream::connect(uds_path)
-        .map_err(|e| format!("connect error ({}): {}", uds_path, e))?;
-    let _ = stream.set_read_timeout(Some(timeout));
-    let _ = stream.set_write_timeout(Some(timeout));
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&full_path)
+        .map_err(|e| format!("failed to open pipe {}: {}", full_path, e))?;
 
+    // Write request
     let req = build_request(method, path, headers, body);
-    stream
-        .write_all(&req)
+    file.write_all(&req)
         .map_err(|e| format!("write error: {}", e))?;
 
-    // Read headers
+    // Read response headers
     let mut buf = Vec::with_capacity(8192);
-    let header_end = read_until_double_crlf(&mut stream, &mut buf)?;
+    let header_end = read_until_double_crlf(&mut file, &mut buf)?;
     let (head, rest) = buf.split_at(header_end);
     let head_str = std::str::from_utf8(head).map_err(|_| "invalid utf-8 in headers".to_string())?;
     let mut lines = head_str.split("\r\n");
@@ -253,14 +234,12 @@ pub fn request_over_uds(
     let header_str = lines.collect::<Vec<_>>().join("\r\n");
     let headers_vec = parse_headers(&header_str);
 
-    // Decide how to read body
+    // Read body
     let body = if let Some(len_str) = header_lookup(&headers_vec, "Content-Length") {
-        // parse len
         let len: usize = len_str
             .parse()
             .map_err(|_| "invalid Content-Length".to_string())?;
         let mut body = Vec::with_capacity(len);
-        // copy any already-read bytes from `rest`
         if !rest.is_empty() {
             body.extend_from_slice(rest);
         }
@@ -268,7 +247,7 @@ pub fn request_over_uds(
             let mut remaining = len - body.len();
             let mut chunk = vec![0u8; remaining.min(16 * 1024)];
             while remaining > 0 {
-                let n = stream
+                let n = file
                     .read(&mut chunk)
                     .map_err(|e| format!("read error: {}", e))?;
                 if n == 0 {
@@ -284,9 +263,7 @@ pub fn request_over_uds(
         body
     } else if matches!(header_lookup(&headers_vec, "Transfer-Encoding"), Some(v) if v.to_ascii_lowercase().contains("chunked"))
     {
-        // copy any already-read bytes into a cursor that first drains `rest`, then reads from stream
-        // Simpler approach: if we already read some bytes after headers, prepend them to a reader which reads from stream.
-        // Implement a small adaptor
+        // Similar to UDS, create a reader draining `rest` first then the file
         struct RestThen<'a, R: Read> {
             rest: &'a [u8],
             inner: R,
@@ -304,15 +281,15 @@ pub fn request_over_uds(
         }
         let mut reader = RestThen {
             rest,
-            inner: &mut stream,
+            inner: &mut file,
         };
         read_chunked(&mut reader)?
     } else {
-        // no length; read to EOF
+        // read to EOF
         let mut body = rest.to_vec();
         let mut chunk = [0u8; 16 * 1024];
         loop {
-            let n = stream
+            let n = file
                 .read(&mut chunk)
                 .map_err(|e| format!("read error: {}", e))?;
             if n == 0 {
@@ -328,37 +305,4 @@ pub fn request_over_uds(
         headers: headers_vec,
         body,
     })
-}
-
-// no non-Unix variant is provided; callers gate by #[cfg(unix)]
-
-/// Parse a raw header-lines string into vector of (name,value) pairs.
-pub fn parse_header_lines(input: &str) -> Vec<(String, String)> {
-    let mut headers = Vec::new();
-    for raw_line in input.split('\n') {
-        let line = raw_line.trim_end_matches('\r').trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(idx) = line.find(':') {
-            let (name, value) = line.split_at(idx);
-            let value = value[1..].trim_start();
-            if !name.is_empty() {
-                headers.push((name.to_string(), value.to_string()));
-            }
-        }
-    }
-    headers
-}
-
-/// Serialize headers back to a single string with CRLF line endings.
-pub fn serialize_headers(headers: &[(String, String)]) -> String {
-    let mut s = String::new();
-    for (k, v) in headers {
-        s.push_str(k);
-        s.push_str(": ");
-        s.push_str(v);
-        s.push_str("\r\n");
-    }
-    s
 }

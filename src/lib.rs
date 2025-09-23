@@ -18,6 +18,8 @@ mod config;
 mod ffi;
 mod manager;
 mod uds;
+#[cfg(windows)]
+mod winpipe;
 
 pub use manager::{initialize, stop};
 

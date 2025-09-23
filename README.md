@@ -25,7 +25,9 @@ Outputs include a Rust `rlib` and a shared library (`.so/.dylib/.dll`) per the c
   - Unix: children run in their own session (`setsid`); sends `SIGTERM`, then `SIGKILL` to the process group on shutdown.
   - Windows: assigns children to a Job; terminating the Job kills the tree.
 - Configuration (`config.rs`): compile-time defaults with env overrides parsed via `shell-words`; tunables include programs, args, and monitor interval.
-- FFI (`ffi.rs`): exports `Initialize`, `Stop`, and a Unix UDS proxy (`ProxyTraceAgentUds`) with `catch_unwind` to avoid unwinding across the FFI boundary.
+- FFI (`ffi.rs`): exports `Initialize`, `Stop`, and a transport-agnostic trace-agent proxy (`ProxyTraceAgentUds`) with `catch_unwind`.
+  - Unix: connects over UDS.
+  - Windows: connects over Windows Named Pipes.
 - Logging: `LIBAGENT_LOG` level and `LIBAGENT_DEBUG` to inherit child stdout/stderr.
 
 For a deeper dive, see ARCHITECTURE.md.
@@ -62,7 +64,7 @@ typedef struct {
   LibagentHttpBuffer body;
 } LibagentHttpResponse;
 
-int32_t ProxyTraceAgentUds(const char *method,
+int32_t ProxyTraceAgent(const char *method,
                            const char *path,
                            const char *headers,
                            const unsigned char *body_ptr,
@@ -135,14 +137,15 @@ fn main() {
 cbindgen --config cbindgen.toml --crate libagent --output include/libagent.h
 ```
 
-## UDS Proxy (Trace Agent)
-- Purpose: allow embedding hosts to call the trace-agent HTTP API over a Unix Domain Socket without linking an HTTP client.
+## Trace Agent Proxy (UDS/Named Pipe)
+- Purpose: allow embedding hosts to call the trace-agent HTTP API without bundling an HTTP client.
 - Function: `ProxyTraceAgentUds(method, path, headers, body_ptr, body_len, out_resp, out_err)`.
-- Socket path (Unix): env `LIBAGENT_TRACE_AGENT_UDS` or default `/var/run/datadog/apm.socket`.
+- Transport:
+  - Unix: UDS. Path from env `LIBAGENT_TRACE_AGENT_UDS` or default `/var/run/datadog/apm.socket`.
+  - Windows: Named Pipe. Pipe name from env `LIBAGENT_TRACE_AGENT_PIPE` or default `trace-agent`. Full path: `\\.\\pipe\\trace-agent`.
 - Headers format: one string with lines `Name: Value` separated by `\n` or `\r\n`.
 - Response: status (u16), headers (CRLF-joined lines), body (bytes). Free with `FreeHttpResponse`.
 - Protocols: supports `Content-Length` and `Transfer-Encoding: chunked` responses.
-- Platform: Unix only; returns an error on non‑Unix.
 
 ## Testing
 Run the cross‑platform integration suite:

@@ -26,7 +26,7 @@ public class JNAExample {
     public interface LibAgent extends Library {
         LibAgent INSTANCE = Native.load("agent", LibAgent.class);
 
-        int ProxyTraceAgentUds(String method,
+        int ProxyTraceAgent(String method,
                                String path,
                                String headers,
                                Pointer bodyPtr,
@@ -41,7 +41,7 @@ public class JNAExample {
     public static void main(String[] args) {
         PointerByReference outResp = new PointerByReference();
         PointerByReference outErr = new PointerByReference();
-        int rc = LibAgent.INSTANCE.ProxyTraceAgentUds(
+        int rc = LibAgent.INSTANCE.ProxyTraceAgent(
                 "GET",
                 "/info",
                 "Accept: application/json\n",
@@ -71,4 +71,3 @@ public class JNAExample {
         LibAgent.INSTANCE.FreeHttpResponse(p);
     }
 }
-

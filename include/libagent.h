@@ -34,13 +34,13 @@ void FreeCString(char *s);
 
 void FreeHttpResponse(struct LibagentHttpResponse *resp);
 
-int32_t ProxyTraceAgentUds(const char *method,
-                           const char *path,
-                           const char *headers,
-                           const uint8_t *body_ptr,
-                           size_t body_len,
-                           struct LibagentHttpResponse **out_resp,
-                           char **out_err);
+int32_t ProxyTraceAgent(const char *method,
+                        const char *path,
+                        const char *headers,
+                        const uint8_t *body_ptr,
+                        size_t body_len,
+                        struct LibagentHttpResponse **out_resp,
+                        char **out_err);
 
 #ifdef __cplusplus
 }  // extern "C"

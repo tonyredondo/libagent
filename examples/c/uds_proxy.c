@@ -12,7 +12,7 @@ int main(void) {
     struct LibagentHttpResponse *resp = NULL;
     char *err = NULL;
 
-    int32_t rc = ProxyTraceAgentUds(method, path, headers, NULL, 0, &resp, &err);
+    int32_t rc = ProxyTraceAgent(method, path, headers, NULL, 0, &resp, &err);
     if (rc != 0) {
         fprintf(stderr, "ProxyTraceAgentUds failed (rc=%d)%s%s\n", rc, err ? ": " : "", err ? err : "");
         if (err) FreeCString(err);
@@ -30,4 +30,3 @@ int main(void) {
     FreeHttpResponse(resp);
     return 0;
 }
-

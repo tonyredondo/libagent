@@ -24,7 +24,7 @@ type libagentHttpResponse struct {
 
 // Function pointers resolved at runtime via purego
 var (
-    proxyTraceAgentUds func(method, path, headers *byte, bodyPtr unsafe.Pointer, bodyLen uintptr, outResp **libagentHttpResponse, outErr **byte) int32
+    proxyTraceAgent func(method, path, headers *byte, bodyPtr unsafe.Pointer, bodyLen uintptr, outResp **libagentHttpResponse, outErr **byte) int32
     freeHttpResponse   func(resp *libagentHttpResponse)
     freeCString        func(s *byte)
 )
@@ -92,7 +92,7 @@ func main() {
         os.Exit(1)
     }
     // Resolve functions
-    purego.RegisterFunc(&proxyTraceAgentUds, handle, "ProxyTraceAgentUds")
+    purego.RegisterFunc(&proxyTraceAgent, handle, "ProxyTraceAgent")
     purego.RegisterFunc(&freeHttpResponse, handle, "FreeHttpResponse")
     purego.RegisterFunc(&freeCString, handle, "FreeCString")
 
@@ -103,7 +103,7 @@ func main() {
 
     var resp *libagentHttpResponse
     var errStr *byte
-    rc := proxyTraceAgentUds(method, path, headers, nil, 0, &resp, &errStr)
+    rc := proxyTraceAgent(method, path, headers, nil, 0, &resp, &errStr)
     if rc != 0 {
         if errStr != nil {
             fmt.Println("error:", ccharpToString(errStr))
@@ -125,4 +125,3 @@ func main() {
         fmt.Println("Body:\n" + string(body))
     }
 }
-

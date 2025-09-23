@@ -16,7 +16,7 @@ no_includes = false
 include = [
   "Initialize",
   "Stop",
-  "ProxyTraceAgentUds",
+  "ProxyTraceAgent",
   "FreeHttpBuffer",
   "FreeHttpResponse",
   "FreeCString",

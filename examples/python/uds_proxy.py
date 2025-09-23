@@ -25,13 +25,13 @@ class LibagentHttpResponse(ct.Structure):
         ("body", LibagentHttpBuffer),
     ]
 
-lib.ProxyTraceAgentUds.argtypes = [
+lib.ProxyTraceAgent.argtypes = [
     ct.c_char_p, ct.c_char_p, ct.c_char_p,
     ct.c_void_p, ct.c_size_t,
     ct.POINTER(ct.POINTER(LibagentHttpResponse)),
     ct.POINTER(ct.c_char_p),
 ]
-lib.ProxyTraceAgentUds.restype = ct.c_int32
+lib.ProxyTraceAgent.restype = ct.c_int32
 
 lib.FreeHttpResponse.argtypes = [ct.POINTER(LibagentHttpResponse)]
 lib.FreeHttpResponse.restype = None
@@ -42,7 +42,7 @@ lib.FreeCString.restype = None
 def main():
     out_resp = ct.POINTER(LibagentHttpResponse)()
     out_err = ct.c_char_p()
-    rc = lib.ProxyTraceAgentUds(b"GET", b"/info", b"Accept: application/json\n", None, 0, ct.byref(out_resp), ct.byref(out_err))
+    rc = lib.ProxyTraceAgent(b"GET", b"/info", b"Accept: application/json\n", None, 0, ct.byref(out_resp), ct.byref(out_err))
     if rc != 0:
         if out_err:
             print("error:", out_err.decode('utf-8'), file=sys.stderr)
@@ -64,4 +64,3 @@ def main():
 if __name__ == '__main__':
     # Example: os.environ['LIBAGENT_TRACE_AGENT_UDS'] = '/var/run/datadog/apm.socket'
     main()
-

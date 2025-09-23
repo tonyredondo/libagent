@@ -23,7 +23,7 @@ struct LibagentHttpResponse {
 }
 
 unsafe extern "C" {
-    fn ProxyTraceAgentUds(
+    fn ProxyTraceAgent(
         method: *const c_char,
         path: *const c_char,
         headers: *const c_char,
@@ -105,7 +105,7 @@ fn uds_proxy_basic() {
     let mut resp_ptr: *mut LibagentHttpResponse = ptr::null_mut();
     let mut err_ptr: *mut c_char = ptr::null_mut();
     let rc = unsafe {
-        ProxyTraceAgentUds(
+        ProxyTraceAgent(
             method.as_ptr(),
             path.as_ptr(),
             headers.as_ptr(),
@@ -207,7 +207,7 @@ fn uds_proxy_chunked() {
     let mut resp_ptr: *mut LibagentHttpResponse = ptr::null_mut();
     let mut err_ptr: *mut c_char = ptr::null_mut();
     let rc = unsafe {
-        ProxyTraceAgentUds(
+        ProxyTraceAgent(
             method.as_ptr(),
             path.as_ptr(),
             headers.as_ptr(),

@@ -5,10 +5,14 @@
 //! `crate::manager`, and these functions simply forward to those safe
 //! Rust APIs.
 
+#[cfg(windows)]
+use crate::config::get_trace_agent_pipe_name;
 #[cfg(unix)]
 use crate::config::get_trace_agent_uds_path;
 use crate::manager;
 use crate::uds;
+#[cfg(windows)]
+use crate::winpipe;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -133,7 +137,7 @@ pub extern "C" fn FreeHttpResponse(resp: *mut LibagentHttpResponse) {
     }
 }
 
-/// Proxy an HTTP request over a Unix Domain Socket to the trace-agent and return the response.
+/// Proxy an HTTP request to the trace-agent over the local IPC transport and return the response.
 ///
 /// Parameters:
 /// - uds_path: path to the UDS (e.g., "/var/run/datadog/apm.socket")
@@ -146,7 +150,7 @@ pub extern "C" fn FreeHttpResponse(resp: *mut LibagentHttpResponse) {
 ///   Returns 0 on success, negative on error.
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn ProxyTraceAgentUds(
+pub extern "C" fn ProxyTraceAgent(
     method: *const c_char,
     path: *const c_char,
     headers: *const c_char,
@@ -197,37 +201,71 @@ pub extern "C" fn ProxyTraceAgentUds(
 
         // Reasonable default timeout
         let timeout = Duration::from_secs(10);
-        // Resolve UDS path (Unix only); on non-Unix request_over_uds will error.
-        #[cfg(unix)]
-        let uds_path = get_trace_agent_uds_path();
-        #[cfg(not(unix))]
-        let uds_path = String::new();
 
-        match uds::request_over_uds(&uds_path, method, path, hdrs, body, timeout) {
-            Ok(resp) => {
-                let headers_txt = uds::serialize_headers(&resp.headers);
-                let headers_buf = make_buf(headers_txt.into_bytes());
-                let body_buf = make_buf(resp.body);
-                let boxed = Box::new(LibagentHttpResponse {
-                    status: resp.status,
-                    headers: headers_buf,
-                    body: body_buf,
-                });
-                unsafe {
-                    if !out_resp.is_null() {
-                        *out_resp = Box::into_raw(boxed);
+        #[cfg(unix)]
+        {
+            let uds_path = get_trace_agent_uds_path();
+            match uds::request_over_uds(&uds_path, method, path, hdrs, body, timeout) {
+                Ok(resp) => {
+                    let headers_txt = uds::serialize_headers(&resp.headers);
+                    let headers_buf = make_buf(headers_txt.into_bytes());
+                    let body_buf = make_buf(resp.body);
+                    let boxed = Box::new(LibagentHttpResponse {
+                        status: resp.status,
+                        headers: headers_buf,
+                        body: body_buf,
+                    });
+                    unsafe {
+                        if !out_resp.is_null() {
+                            *out_resp = Box::into_raw(boxed);
+                        }
                     }
+                    0
                 }
-                0
+                Err(err) => {
+                    to_c_error(out_err, err);
+                    -2
+                }
             }
-            Err(err) => {
-                to_c_error(out_err, err);
-                -2
+        }
+        #[cfg(windows)]
+        {
+            let pipe_name = get_trace_agent_pipe_name();
+            if pipe_name.trim().is_empty() {
+                to_c_error(out_err, "LIBAGENT_TRACE_AGENT_PIPE not set".to_string());
+                return -4;
             }
+            match winpipe::request_over_named_pipe(&pipe_name, method, path, hdrs, body, timeout) {
+                Ok(resp) => {
+                    let headers_txt = uds::serialize_headers(&resp.headers);
+                    let headers_buf = make_buf(headers_txt.into_bytes());
+                    let body_buf = make_buf(resp.body);
+                    let boxed = Box::new(LibagentHttpResponse {
+                        status: resp.status,
+                        headers: headers_buf,
+                        body: body_buf,
+                    });
+                    unsafe {
+                        if !out_resp.is_null() {
+                            *out_resp = Box::into_raw(boxed);
+                        }
+                    }
+                    0
+                }
+                Err(err) => {
+                    to_c_error(out_err, err);
+                    -2
+                }
+            }
+        }
+        #[cfg(all(not(unix), not(windows)))]
+        {
+            to_c_error(out_err, "platform not supported".to_string());
+            -3
         }
     }))
     .unwrap_or_else(|_| {
-        to_c_error(out_err, "panic in ProxyTraceAgentUds".to_string());
+        to_c_error(out_err, "panic in ProxyTraceAgent".to_string());
         -100
     })
 }

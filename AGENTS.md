@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 - For a deeper architectural description (lifecycle, backoff, platform specifics), see ARCHITECTURE.md.
 - `src/` — core library code:
-  - `lib.rs` (public API: `initialize`, `stop`), `ffi.rs` (C FFI: `Initialize`, `Stop`, `ProxyTraceAgentUds`), `manager.rs` (process lifecycle), `config.rs` (constants/env overrides), `uds.rs` (HTTP-over-UDS client used by the proxy).
+  - `lib.rs` (public API: `initialize`, `stop`), `ffi.rs` (C FFI: `Initialize`, `Stop`, `ProxyTraceAgentUds`), `manager.rs` (process lifecycle), `config.rs` (constants/env overrides), `uds.rs` (HTTP-over-UDS client), `winpipe.rs` (HTTP-over-Windows-Named-Pipe client).
 - `tests/` — integration tests (`respawn.rs`, `idempotent.rs`, `start_stop_unix.rs`, `windows_sanity.rs`) plus helpers in `tests/common/`.
 - `.github/workflows/ci.yml` — GitHub Actions (Linux, macOS, Windows; nightly toolchain).
 - `target/` — build artifacts.
@@ -39,6 +39,7 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 ## Security & Configuration Tips
 - Default programs/args live in `src/config.rs`. Runtime overrides (for dev/tests): `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`, `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`, `LIBAGENT_MONITOR_INTERVAL_SECS`, `LIBAGENT_LOG`, `LIBAGENT_DEBUG`.
 - UDS proxy: `LIBAGENT_TRACE_AGENT_UDS` overrides the Unix socket path used by `ProxyTraceAgentUds` (default: `/var/run/datadog/apm.socket`).
+- Windows Named Pipe proxy: `LIBAGENT_TRACE_AGENT_PIPE` overrides the pipe name used by `ProxyTraceAgent` on Windows (default: `trace-agent`, full path: `\\.\\pipe\\trace-agent`).
 - `*_ARGS` values are parsed using shell-words. Quote arguments as you would in a shell (e.g., `LIBAGENT_AGENT_ARGS='-c "my arg"'`).
 - Example: `LIBAGENT_LOG=debug LIBAGENT_MONITOR_INTERVAL_SECS=1 cargo +nightly test -- --nocapture`.
 
