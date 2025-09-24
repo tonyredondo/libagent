@@ -106,15 +106,16 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 
 ### Trace Agent Proxy
 - Purpose: allow embedding consumers to proxy HTTP requests to the trace-agent over a local IPC transport without linking HTTP client code.
-- Exported function: `int32_t ProxyTraceAgent(const char* method, const char* path, const char* headers, const uint8_t* body_ptr, size_t body_len, LibagentHttpResponse** out_resp, char** out_err)`.
+- Exported function: `int32_t ProxyTraceAgent(const char* method, const char* path, const char* headers, const uint8_t* body_ptr, size_t body_len, ResponseCallback on_response, ErrorCallback on_error, void* user_data)`.
 - Path resolution:
   - Unix: UDS socket via `LIBAGENT_TRACE_AGENT_UDS` (default `/var/run/datadog/apm.socket`).
   - Windows: Named pipe via `LIBAGENT_TRACE_AGENT_PIPE` (default `trace-agent`, full `\\.\\pipe\\trace-agent`).
 - Timeout: 50 seconds for both Unix UDS and Windows Named Pipe connections.
 - Request shape: headers are a single string with lines `Name: Value` separated by `\n` or `\r\n`; body is an optional byte slice.
-- Response: status (u16), headers (CRLF-joined lines), body (bytes). Free with `FreeHttpResponse`.
+- Response: delivered via callback with status (u16), headers (bytes), body (bytes) - no manual memory management required.
 - Protocol support: HTTP/1.1 with `Content-Length` and `Transfer-Encoding: chunked` responses.
 - Platform: Unix (UDS) and Windows (Named Pipes).
+- Callbacks: `ResponseCallback` for success (status, headers, body), `ErrorCallback` for errors (message) - either callback is guaranteed to be called before the function returns.
 
 ## Testing Strategy
 - Integration tests under `tests/` use temporary stub scripts to simulate child behavior.

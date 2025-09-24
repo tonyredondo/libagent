@@ -70,7 +70,6 @@ pub type ErrorCallback = extern "C" fn(
     user_data: *mut ::std::os::raw::c_void,
 );
 
-
 unsafe fn cstr_arg<'a>(p: *const c_char, name: &str) -> Result<&'a str, String> {
     if p.is_null() {
         return Err(format!("{} is null", name));

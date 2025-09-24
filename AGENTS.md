@@ -54,10 +54,12 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 - If you change the FFI surface, regenerate and commit the updated `include/libagent.h`.
 - Optional feature: enable `--features log` to route logs through the `log` crate instead of stderr. You may run tests with logging enabled: `cargo +nightly test --features log -- --nocapture`.
 
-### UDS Proxy FFI
-- New export: `ProxyTraceAgent(...)` proxies an HTTP request over an IPC transport to the trace-agent and returns the raw HTTP status, headers, and body. On Unix this uses UDS; on Windows it uses Named Pipes.
+### Proxy FFI
+- New export: `ProxyTraceAgent(...)` proxies an HTTP request over an IPC transport to the trace-agent using callback-based API. On Unix this uses UDS; on Windows it uses Named Pipes.
 - Windows note: the named-pipe client enforces request timeouts using a separate thread with cancellation support (default: 50 seconds).
-- See `include/libagent.h` for the C types `LibagentHttpBuffer` and `LibagentHttpResponse` and free helpers `FreeHttpBuffer`, `FreeHttpResponse`, `FreeCString`.
+- Callback-based API: provides `ResponseCallback` and `ErrorCallback` function pointers for handling responses/errors without manual memory management.
+- Either success or error callback is guaranteed to be called before the function returns.
+- See `include/libagent.h` for the callback function type definitions.
 - On unsupported platforms, the function returns an error.
 
 ## Platform Notes

@@ -84,14 +84,18 @@ Ensure the loader can locate the native library (see prerequisites).
 
 ---
 
-Node.js (examples/js/index.js)
+Node.js (examples/js/index.js & examples/js/async-worker.js)
 
 Install deps and run:
 
 npm install ffi-napi ref-napi && \
 DYLD_LIBRARY_PATH=target/debug node examples/js/index.js
 
-**High-level API**: `LibAgentClient` class provides promise-based methods like `get()`, `post()`, etc. that return Promises.
+**Standard API**: `LibAgentClient` class provides promise-based methods that return Promises (synchronous FFI calls wrapped in promises).
+
+**Truly Async API**: `AsyncLibAgentClient` in `async-worker.js` uses worker threads for non-blocking FFI calls - run with:
+
+DYLD_LIBRARY_PATH=target/debug node examples/js/async-worker.js
 
 ---
 

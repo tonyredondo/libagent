@@ -16,6 +16,9 @@ const lib = ffi.Library('libagent', {
   'ProxyTraceAgent': ['int32', ['string', 'string', 'string', voidPtr, size_t, voidPtr, voidPtr, voidPtr]],
 });
 
+// Export for use in worker threads
+module.exports = { lib, ref, ResponseCallback, ErrorCallback, size_t, uint16, uint8Ptr, charPtr, voidPtr };
+
 // High-level Promise-based API with true async behavior
 class LibAgentClient {
   // Make a request and return a Promise (now truly async!)

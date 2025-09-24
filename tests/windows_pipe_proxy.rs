@@ -39,16 +39,55 @@ fn force_link_lib() {
 }
 
 #[repr(C)]
-struct LibagentHttpBuffer {
-    data: *mut u8,
-    len: usize,
+struct TestResult {
+    status: Option<u16>,
+    headers: Option<Vec<u8>>,
+    body: Option<Vec<u8>>,
+    error: Option<String>,
 }
 
-#[repr(C)]
-struct LibagentHttpResponse {
+impl TestResult {
+    fn new() -> Self {
+        Self {
+            status: None,
+            headers: None,
+            body: None,
+            error: None,
+        }
+    }
+}
+
+extern "C" fn test_response_callback(
     status: u16,
-    headers: LibagentHttpBuffer,
-    body: LibagentHttpBuffer,
+    headers_data: *const u8,
+    headers_len: usize,
+    body_data: *const u8,
+    body_len: usize,
+    user_data: *mut ::std::os::raw::c_void,
+) {
+    let result = unsafe { &mut *(user_data as *mut TestResult) };
+    result.status = Some(status);
+
+    if !headers_data.is_null() && headers_len > 0 {
+        let headers_slice = unsafe { std::slice::from_raw_parts(headers_data, headers_len) };
+        result.headers = Some(headers_slice.to_vec());
+    }
+
+    if !body_data.is_null() && body_len > 0 {
+        let body_slice = unsafe { std::slice::from_raw_parts(body_data, body_len) };
+        result.body = Some(body_slice.to_vec());
+    }
+}
+
+extern "C" fn test_error_callback(
+    error_message: *const c_char,
+    user_data: *mut ::std::os::raw::c_void,
+) {
+    let result = unsafe { &mut *(user_data as *mut TestResult) };
+    if !error_message.is_null() {
+        let c_str = unsafe { std::ffi::CStr::from_ptr(error_message) };
+        result.error = Some(c_str.to_string_lossy().to_string());
+    }
 }
 
 unsafe extern "C" {
@@ -58,12 +97,17 @@ unsafe extern "C" {
         headers: *const c_char,
         body_ptr: *const u8,
         body_len: usize,
-        out_resp: *mut *mut LibagentHttpResponse,
-        out_err: *mut *mut c_char,
+        on_response: extern "C" fn(
+            u16,
+            *const u8,
+            usize,
+            *const u8,
+            usize,
+            *mut ::std::os::raw::c_void,
+        ),
+        on_error: extern "C" fn(*const c_char, *mut ::std::os::raw::c_void),
+        user_data: *mut ::std::os::raw::c_void,
     ) -> i32;
-
-    fn FreeHttpResponse(resp: *mut LibagentHttpResponse);
-    fn FreeCString(s: *mut c_char);
 }
 
 fn to_wide(s: &str) -> Vec<u16> {
@@ -142,12 +186,15 @@ fn windows_pipe_proxy_basic() {
         env::set_var("LIBAGENT_TRACE_AGENT_PIPE", &pipe_name);
     }
 
-    // Call FFI
+    // Call FFI with callbacks
     let method = CString::new("GET").unwrap();
     let path = CString::new("/info").unwrap();
     let headers = CString::new("Accept: */*\n").unwrap();
-    let mut resp_ptr: *mut LibagentHttpResponse = ptr::null_mut();
-    let mut err_ptr: *mut c_char = ptr::null_mut();
+
+    // Prepare result storage
+    let mut result = TestResult::new();
+    let result_ptr = &mut result as *mut TestResult as *mut ::std::os::raw::c_void;
+
     let rc = unsafe {
         ProxyTraceAgent(
             method.as_ptr(),
@@ -155,33 +202,31 @@ fn windows_pipe_proxy_basic() {
             headers.as_ptr(),
             ptr::null(),
             0,
-            &mut resp_ptr,
-            &mut err_ptr,
+            test_response_callback,
+            test_error_callback,
+            result_ptr,
         )
     };
+
     if rc != 0 {
-        if !err_ptr.is_null() {
-            unsafe { FreeCString(err_ptr) };
-        }
-        eprintln!("skipping windows_pipe_proxy_basic: rc={} err", rc);
+        eprintln!(
+            "skipping windows_pipe_proxy_basic: rc={}, err={:?}",
+            rc, result.error
+        );
         let _ = th.join();
         return;
     }
 
-    unsafe {
-        let resp = &*resp_ptr;
-        assert_eq!(resp.status, 200);
-        let headers_slice = std::slice::from_raw_parts(resp.headers.data, resp.headers.len);
-        let headers_str = String::from_utf8_lossy(headers_slice);
-        assert!(
-            headers_str.contains("X-Server: pipe-test"),
-            "headers: {}",
-            headers_str
-        );
-        let body_slice = std::slice::from_raw_parts(resp.body.data, resp.body.len);
-        assert_eq!(body_slice, b"pipe response");
-        FreeHttpResponse(resp_ptr);
-    }
+    assert_eq!(result.status, Some(200));
+    let headers_vec = result.headers.as_ref().expect("headers should be set");
+    let headers_str = String::from_utf8_lossy(headers_vec);
+    assert!(
+        headers_str.contains("X-Server: pipe-test"),
+        "headers: {}",
+        headers_str
+    );
+    let body_vec = result.body.as_ref().expect("body should be set");
+    assert_eq!(body_vec, &b"pipe response".to_vec());
     let _ = th.join();
 
     // Clean up environment variable
@@ -260,8 +305,11 @@ fn windows_pipe_proxy_chunked() {
     let method = CString::new("GET").unwrap();
     let path = CString::new("/info").unwrap();
     let headers = CString::new("Accept: */*\n").unwrap();
-    let mut resp_ptr: *mut LibagentHttpResponse = ptr::null_mut();
-    let mut err_ptr: *mut c_char = ptr::null_mut();
+
+    // Prepare result storage
+    let mut result = TestResult::new();
+    let result_ptr = &mut result as *mut TestResult as *mut ::std::os::raw::c_void;
+
     let rc = unsafe {
         ProxyTraceAgent(
             method.as_ptr(),
@@ -269,40 +317,38 @@ fn windows_pipe_proxy_chunked() {
             headers.as_ptr(),
             ptr::null(),
             0,
-            &mut resp_ptr,
-            &mut err_ptr,
+            test_response_callback,
+            test_error_callback,
+            result_ptr,
         )
     };
+
     if rc != 0 {
-        if !err_ptr.is_null() {
-            unsafe { FreeCString(err_ptr) };
-        }
-        eprintln!("skipping windows_pipe_proxy_chunked: rc={} err", rc);
+        eprintln!(
+            "skipping windows_pipe_proxy_chunked: rc={}, err={:?}",
+            rc, result.error
+        );
         let _ = th.join();
         return;
     }
 
-    unsafe {
-        let resp = &*resp_ptr;
-        assert_eq!(resp.status, 200);
-        let headers_slice = std::slice::from_raw_parts(resp.headers.data, resp.headers.len);
-        let headers_str = String::from_utf8_lossy(headers_slice);
-        assert!(
-            headers_str
-                .to_ascii_lowercase()
-                .contains("transfer-encoding: chunked"),
-            "headers: {}",
-            headers_str
-        );
-        assert!(
-            headers_str.contains("X-Server: pipe-test-chunked"),
-            "headers: {}",
-            headers_str
-        );
-        let body_slice = std::slice::from_raw_parts(resp.body.data, resp.body.len);
-        assert_eq!(body_slice, b"hello world");
-        FreeHttpResponse(resp_ptr);
-    }
+    assert_eq!(result.status, Some(200));
+    let headers_vec = result.headers.as_ref().expect("headers should be set");
+    let headers_str = String::from_utf8_lossy(headers_vec);
+    assert!(
+        headers_str
+            .to_ascii_lowercase()
+            .contains("transfer-encoding: chunked"),
+        "headers: {}",
+        headers_str
+    );
+    assert!(
+        headers_str.contains("X-Server: pipe-test-chunked"),
+        "headers: {}",
+        headers_str
+    );
+    let body_vec = result.body.as_ref().expect("body should be set");
+    assert_eq!(body_vec, &b"hello world".to_vec());
     let _ = th.join();
 
     // Clean up environment variable

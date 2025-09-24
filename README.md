@@ -144,13 +144,14 @@ cbindgen --config cbindgen.toml --crate libagent --output include/libagent.h
 
 ## Trace Agent Proxy (UDS/Named Pipe)
 - Purpose: allow embedding hosts to call the trace-agent HTTP API without bundling an HTTP client.
-- Function: `ProxyTraceAgent(method, path, headers, body_ptr, body_len, out_resp, out_err)`.
+- Function: `ProxyTraceAgent(method, path, headers, body_ptr, body_len, on_response, on_error, user_data)`.
 - Transport:
   - Unix: UDS. Path from env `LIBAGENT_TRACE_AGENT_UDS` or default `/var/run/datadog/apm.socket`.
   - Windows: Named Pipe. Pipe name from env `LIBAGENT_TRACE_AGENT_PIPE` or default `trace-agent`. Full path: `\\.\\pipe\\trace-agent`.
 - Timeout: 50 seconds for both Unix UDS and Windows Named Pipe connections.
 - Headers format: one string with lines `Name: Value` separated by `\n` or `\r\n`.
-- Response: status (u16), headers (CRLF-joined lines), body (bytes). Free with `FreeHttpResponse`.
+- Response: delivered via callback with status (u16), headers (bytes), body (bytes) - no manual memory management!
+- Callbacks: Either success or error callback is guaranteed to be called before function returns.
 - Protocols: supports `Content-Length` and `Transfer-Encoding: chunked` responses.
 
 ## Testing
