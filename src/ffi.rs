@@ -260,4 +260,306 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "valid string");
     }
+
+    #[test]
+    fn test_initialize_function() {
+        // Test that Initialize() can be called without panicking
+        // This should be safe to call as it's idempotent
+        Initialize();
+    }
+
+    #[test]
+    fn test_stop_function() {
+        // Test that Stop() can be called without panicking
+        // This should be safe to call as it's idempotent
+        Stop();
+    }
+
+    #[test]
+    fn test_validate_proxy_args_null_method() {
+        use std::ffi::CString;
+
+        let path = CString::new("/test").unwrap();
+        let headers = CString::new("Content-Type: application/json").unwrap();
+
+        let result = validate_proxy_args_new(
+            std::ptr::null(), // null method
+            path.as_ptr(),
+            headers.as_ptr(),
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("method is null"));
+    }
+
+    #[test]
+    fn test_validate_proxy_args_null_path() {
+        use std::ffi::CString;
+
+        let method = CString::new("GET").unwrap();
+        let headers = CString::new("Content-Type: application/json").unwrap();
+
+        let result = validate_proxy_args_new(
+            method.as_ptr(),
+            std::ptr::null(), // null path
+            headers.as_ptr(),
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("path is null"));
+    }
+
+    #[test]
+    fn test_validate_proxy_args_invalid_method_utf8() {
+        use std::ffi::CString;
+
+        let path = CString::new("/test").unwrap();
+        let headers = CString::new("Content-Type: application/json").unwrap();
+
+        // Create invalid UTF-8 for method
+        let invalid_method = vec![0x80, 0x81, 0x00]; // Invalid UTF-8 followed by null terminator
+        let method_cstr = unsafe { CString::from_vec_with_nul_unchecked(invalid_method) };
+
+        let result = validate_proxy_args_new(
+            method_cstr.as_ptr(),
+            path.as_ptr(),
+            headers.as_ptr(),
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("method is not valid UTF-8"));
+    }
+
+    #[test]
+    fn test_validate_proxy_args_invalid_path_utf8() {
+        use std::ffi::CString;
+
+        let method = CString::new("GET").unwrap();
+        let headers = CString::new("Content-Type: application/json").unwrap();
+
+        // Create invalid UTF-8 for path
+        let invalid_path = vec![0x80, 0x81, 0x00]; // Invalid UTF-8 followed by null terminator
+        let path_cstr = unsafe { CString::from_vec_with_nul_unchecked(invalid_path) };
+
+        let result = validate_proxy_args_new(
+            method.as_ptr(),
+            path_cstr.as_ptr(),
+            headers.as_ptr(),
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("path is not valid UTF-8"));
+    }
+
+    #[test]
+    fn test_validate_proxy_args_null_headers() {
+        use std::ffi::CString;
+
+        let method = CString::new("GET").unwrap();
+        let path = CString::new("/test").unwrap();
+
+        let result = validate_proxy_args_new(
+            method.as_ptr(),
+            path.as_ptr(),
+            std::ptr::null(), // null headers
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("headers is null"));
+    }
+
+    #[test]
+    fn test_validate_proxy_args_invalid_headers_utf8() {
+        use std::ffi::CString;
+
+        let method = CString::new("GET").unwrap();
+        let path = CString::new("/test").unwrap();
+
+        // Create invalid UTF-8 for headers
+        let invalid_headers = vec![0x80, 0x81, 0x00]; // Invalid UTF-8 followed by null terminator
+        let headers_cstr = unsafe { CString::from_vec_with_nul_unchecked(invalid_headers) };
+
+        let result = validate_proxy_args_new(
+            method.as_ptr(),
+            path.as_ptr(),
+            headers_cstr.as_ptr(),
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("headers is not valid UTF-8"));
+    }
+
+    #[test]
+    fn test_validate_proxy_args_with_body() {
+        use std::ffi::CString;
+
+        let method = CString::new("POST").unwrap();
+        let path = CString::new("/test").unwrap();
+        let headers = CString::new("Content-Type: application/json").unwrap();
+        let body_data = b"{\"test\": \"data\"}";
+        let body_len = body_data.len();
+
+        let result = validate_proxy_args_new(
+            method.as_ptr(),
+            path.as_ptr(),
+            headers.as_ptr(),
+            body_data.as_ptr(),
+            body_len,
+        );
+
+        assert!(result.is_ok());
+        let (method_str, path_str, _headers_vec, body_vec) = result.unwrap();
+        assert_eq!(method_str, "POST");
+        assert_eq!(path_str, "/test");
+        assert_eq!(body_vec, body_data);
+    }
+
+    #[test]
+    fn test_validate_proxy_args_empty_body() {
+        use std::ffi::CString;
+
+        let method = CString::new("GET").unwrap();
+        let path = CString::new("/test").unwrap();
+        let headers = CString::new("Content-Type: application/json").unwrap();
+
+        let result = validate_proxy_args_new(
+            method.as_ptr(),
+            path.as_ptr(),
+            headers.as_ptr(),
+            std::ptr::null(), // null body
+            0,                // zero length
+        );
+
+        assert!(result.is_ok());
+        let (method_str, path_str, _headers_vec, body_vec) = result.unwrap();
+        assert_eq!(method_str, "GET");
+        assert_eq!(path_str, "/test");
+        assert!(body_vec.is_empty());
+    }
+
+    #[test]
+    fn test_proxy_trace_agent_validation_error() {
+        use std::ffi::CString;
+        use std::sync::Mutex;
+
+        let path = CString::new("/test").unwrap();
+        let headers = CString::new("Content-Type: application/json").unwrap();
+
+        static ERROR_CALLED: Mutex<bool> = Mutex::new(false);
+
+        extern "C" fn error_callback(
+            _msg: *const ::std::os::raw::c_char,
+            _user_data: *mut ::std::os::raw::c_void,
+        ) {
+            *ERROR_CALLED.lock().unwrap() = true;
+        }
+
+        let response_callback: *const ::std::os::raw::c_void = std::ptr::null();
+        let error_callback_ptr: *const ::std::os::raw::c_void = error_callback as *const _;
+
+        // Test with null method (should trigger validation error)
+        let result = ProxyTraceAgent(
+            std::ptr::null(), // null method
+            path.as_ptr(),
+            headers.as_ptr(),
+            std::ptr::null(),
+            0,
+            response_callback,
+            error_callback_ptr,
+            std::ptr::null_mut(),
+        );
+
+        assert_eq!(result, -1);
+        assert!(*ERROR_CALLED.lock().unwrap());
+    }
+
+    #[test]
+    fn test_proxy_trace_agent_request_error() {
+        use std::ffi::CString;
+        use std::sync::Mutex;
+
+        // Use a path that will likely cause a connection error
+        let method = CString::new("GET").unwrap();
+        let path = CString::new("/nonexistent").unwrap();
+        let headers = CString::new("Content-Type: application/json").unwrap();
+
+        static ERROR_CALLED: Mutex<bool> = Mutex::new(false);
+
+        extern "C" fn error_callback(
+            _msg: *const ::std::os::raw::c_char,
+            _user_data: *mut ::std::os::raw::c_void,
+        ) {
+            *ERROR_CALLED.lock().unwrap() = true;
+        }
+
+        let response_callback: *const ::std::os::raw::c_void = std::ptr::null();
+        let error_callback_ptr: *const ::std::os::raw::c_void = error_callback as *const _;
+
+        // This should fail because there's no actual trace agent running
+        let result = ProxyTraceAgent(
+            method.as_ptr(),
+            path.as_ptr(),
+            headers.as_ptr(),
+            std::ptr::null(),
+            0,
+            response_callback,
+            error_callback_ptr,
+            std::ptr::null_mut(),
+        );
+
+        // Should return an error code (likely -2 for request error)
+        assert_eq!(result, -2);
+        assert!(*ERROR_CALLED.lock().unwrap());
+    }
+
+    #[test]
+    fn test_proxy_trace_agent_panic_handling() {
+        use std::ffi::CString;
+        use std::sync::Mutex;
+
+        let method = CString::new("GET").unwrap();
+        let path = CString::new("/test").unwrap();
+        let headers = CString::new("Content-Type: application/json").unwrap();
+
+        static ERROR_CALLED: Mutex<bool> = Mutex::new(false);
+
+        extern "C" fn error_callback(
+            _msg: *const ::std::os::raw::c_char,
+            _user_data: *mut ::std::os::raw::c_void,
+        ) {
+            *ERROR_CALLED.lock().unwrap() = true;
+        }
+
+        let response_callback: *const ::std::os::raw::c_void = std::ptr::null();
+        let error_callback_ptr: *const ::std::os::raw::c_void = error_callback as *const _;
+
+        // Test panic handling - this should catch panics in the unwind closure
+        // We'll use a method that might trigger some internal panic scenario
+        let result = ProxyTraceAgent(
+            method.as_ptr(),
+            path.as_ptr(),
+            headers.as_ptr(),
+            std::ptr::null(),
+            0,
+            response_callback,
+            error_callback_ptr,
+            std::ptr::null_mut(),
+        );
+
+        // Even if it doesn't panic, it should handle potential panics gracefully
+        // The return value could be -2 (request error) or -100 (panic), both are acceptable
+        assert!(result == -2 || result == -100);
+    }
 }

@@ -8,7 +8,7 @@ Prerequisites
   - Linux: export `LD_LIBRARY_PATH=target/debug` (or `target/release`).
   - macOS: export `DYLD_LIBRARY_PATH=target/debug` (or `target/release`).
 - Socket path (Unix): set `LIBAGENT_TRACE_AGENT_UDS` to your trace-agent UDS path if not using the default `/var/run/datadog/apm.socket`.
-- Windows Named Pipe: set `LIBAGENT_TRACE_AGENT_PIPE` to the pipe name (default `trace-agent`). Timeout is enforced using a separate thread with cancellation (default: 50 seconds).
+- Windows Named Pipe: set `LIBAGENT_TRACE_AGENT_PIPE` to the pipe name (default `trace-agent`). Uses a reusable worker pool (4 workers by default) to handle concurrent requests efficiently under high load, with per-request timeout support (default: 50 seconds).
 
 Notes
 - The examples call `GET /info` with `Accept: application/json` to avoid sending large payloads.

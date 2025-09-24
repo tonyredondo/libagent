@@ -75,7 +75,7 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 - A Job Object is created and configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
 - Each child process is assigned to the Job; on stop, the Job is terminated to kill the entire tree, and the handle is closed.
 - `CreateJobObjectW` is declared via an `unsafe extern "system"` block to maintain compatibility across `windows-sys` versions.
- - Note: the Windows Named Pipe HTTP client enforces request timeouts using a separate thread with cancellation support (default: 50 seconds).
+- The Windows Named Pipe HTTP client uses a reusable worker pool (4 workers by default) to handle concurrent requests efficiently under high load, with per-request timeout support (default: 50 seconds).
 
 ## Configuration
 - Defaults live in `src/config.rs`:

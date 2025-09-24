@@ -195,6 +195,10 @@ mod tests {
 
     #[test]
     fn test_get_agent_program_default() {
+        // Clean up any environment variables from previous tests
+        unsafe {
+            std::env::remove_var(ENV_AGENT_PROGRAM);
+        }
         // Test default value
         let program = get_agent_program();
         assert_eq!(program, AGENT_PROGRAM);
@@ -215,6 +219,10 @@ mod tests {
 
     #[test]
     fn test_get_agent_args_default() {
+        // Clean up any environment variables from previous tests
+        unsafe {
+            std::env::remove_var(ENV_AGENT_ARGS);
+        }
         // Test default value
         let args = get_agent_args();
         assert_eq!(
@@ -259,6 +267,10 @@ mod tests {
 
     #[test]
     fn test_get_trace_agent_program_default() {
+        // Clean up any environment variables from previous tests
+        unsafe {
+            std::env::remove_var(ENV_TRACE_AGENT_PROGRAM);
+        }
         // Test default value
         let program = get_trace_agent_program();
         assert_eq!(program, TRACE_AGENT_PROGRAM);
@@ -277,8 +289,13 @@ mod tests {
         }
     }
 
+    #[test]
     #[serial]
     fn test_get_trace_agent_args_default() {
+        // Clean up any environment variables from previous tests
+        unsafe {
+            std::env::remove_var(ENV_TRACE_AGENT_ARGS);
+        }
         // Test default value - should be empty since TRACE_AGENT_ARGS is empty
         let args = get_trace_agent_args();
         assert_eq!(args, Vec::<String>::new());
@@ -306,6 +323,10 @@ mod tests {
 
     #[test]
     fn test_get_monitor_interval_secs_default() {
+        // Clean up any environment variables from previous tests
+        unsafe {
+            std::env::remove_var(ENV_MONITOR_INTERVAL_SECS);
+        }
         // Test default value
         let interval = get_monitor_interval_secs();
         assert_eq!(interval, MONITOR_INTERVAL_SECS);
@@ -341,6 +362,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_get_trace_agent_uds_path_default() {
+        // Clean up any environment variables from previous tests
+        unsafe {
+            std::env::remove_var(ENV_TRACE_AGENT_UDS);
+        }
         // Test default value
         let path = get_trace_agent_uds_path();
         assert_eq!(path, TRACE_AGENT_UDS_DEFAULT);
@@ -363,6 +388,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_get_trace_agent_pipe_name_default() {
+        // Clean up any environment variables from previous tests
+        unsafe {
+            std::env::remove_var(ENV_TRACE_AGENT_PIPE);
+        }
         // Test default value
         let name = get_trace_agent_pipe_name();
         assert_eq!(name, TRACE_AGENT_PIPE_DEFAULT);
@@ -429,6 +458,7 @@ mod tests {
         assert_eq!(timeout, GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
     }
 
+    #[test]
     #[serial]
     fn test_get_monitor_interval_secs_empty_string() {
         unsafe {
@@ -442,6 +472,7 @@ mod tests {
         }
     }
 
+    #[test]
     #[serial]
     fn test_get_agent_args_empty() {
         unsafe {
@@ -454,6 +485,7 @@ mod tests {
         }
     }
 
+    #[test]
     #[serial]
     fn test_get_trace_agent_args_empty() {
         unsafe {
@@ -466,6 +498,7 @@ mod tests {
         }
     }
 
+    #[test]
     #[serial]
     fn test_get_trace_agent_args_invalid_shell_words() {
         unsafe {

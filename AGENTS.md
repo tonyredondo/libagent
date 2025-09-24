@@ -56,7 +56,7 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 
 ### Proxy FFI
 - New export: `ProxyTraceAgent(...)` proxies an HTTP request over an IPC transport to the trace-agent using callback-based API. On Unix this uses UDS; on Windows it uses Named Pipes.
-- Windows note: the named-pipe client enforces request timeouts using a separate thread with cancellation support (default: 50 seconds).
+- Windows note: the named-pipe client uses a reusable worker pool (4 workers by default) to handle concurrent requests efficiently under high load, with per-request timeout support (default: 50 seconds).
 - Callback-based API: provides `ResponseCallback` and `ErrorCallback` function pointers for handling responses/errors without manual memory management.
 - Either success or error callback is guaranteed to be called before the function returns.
 - See `include/libagent.h` for the callback function type definitions.

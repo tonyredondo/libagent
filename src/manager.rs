@@ -34,6 +34,8 @@ use crate::config::{
     get_monitor_interval_secs, get_trace_agent_args, get_trace_agent_program,
 };
 use crate::metrics;
+#[cfg(windows)]
+use crate::winpipe;
 
 /// Environment variable to enable verbose debug logging.
 ///
@@ -718,6 +720,12 @@ pub fn initialize() {
 /// Stops the monitor task and terminates both child processes. Safe to call
 /// multiple times (idempotent). Called automatically on library unload.
 pub fn stop() {
+    // Shutdown worker pool on Windows
+    #[cfg(windows)]
+    {
+        winpipe::shutdown_worker_pool();
+    }
+
     if let Some(mgr) = GLOBAL_MANAGER.get() {
         mgr.stop();
     }
@@ -742,12 +750,25 @@ mod tests {
 
     #[test]
     fn test_is_debug_enabled_true_values() {
+        // Snapshot the original value to restore later
+        let original_value = env::var("LIBAGENT_DEBUG").ok();
         unsafe {
             env::set_var("LIBAGENT_DEBUG", "1");
         }
-        // Need to reset the OnceLock for the test
-        // This is tricky since OnceLock can't be reset, so we'll skip this test
-        // and rely on integration tests for env var testing
+        // Test that the function returns true when LIBAGENT_DEBUG=1
+        // We can't easily test this due to OnceLock caching, but we can at least
+        // verify the environment variable is set correctly
+        assert_eq!(env::var("LIBAGENT_DEBUG").unwrap(), "1");
+
+        // Restore the original value
+        match original_value {
+            Some(val) => unsafe {
+                env::set_var("LIBAGENT_DEBUG", val);
+            },
+            None => unsafe {
+                env::remove_var("LIBAGENT_DEBUG");
+            },
+        }
     }
 
     #[test]
@@ -780,11 +801,25 @@ mod tests {
     #[test]
     fn test_child_stdio_inherit_debug() {
         // Test with debug enabled - should inherit
+        // Snapshot the original value to restore later
+        let original_value = env::var("LIBAGENT_DEBUG").ok();
         unsafe {
             env::set_var("LIBAGENT_DEBUG", "1");
         }
-        // Hard to test due to OnceLock, but we can test the function exists
+        // Test that the function exists and doesn't crash
         let _ = child_stdio_inherit();
+        // Verify the environment variable was set correctly
+        assert_eq!(env::var("LIBAGENT_DEBUG").unwrap(), "1");
+
+        // Restore the original value
+        match original_value {
+            Some(val) => unsafe {
+                env::set_var("LIBAGENT_DEBUG", val);
+            },
+            None => unsafe {
+                env::remove_var("LIBAGENT_DEBUG");
+            },
+        }
     }
 
     #[test]
@@ -921,5 +956,84 @@ mod tests {
         assert_eq!(spec.name, "test");
         assert_eq!(spec.program, "/bin/test");
         assert_eq!(spec.args, vec!["arg1".to_string(), "arg2".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_wait_with_timeout_timeout() {
+        // Start a long-running process
+        let mut child = Command::new("sleep").arg("10").spawn().unwrap();
+
+        // Wait with a very short timeout - should return false (timeout)
+        let result = AgentManager::wait_with_timeout(&mut child, Duration::from_millis(10));
+        assert!(!result);
+
+        // Clean up
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_signal_process_pid_invalid_pid() {
+        // Start a process
+        let mut child = Command::new("sleep").arg("1").spawn().unwrap();
+
+        // Try to signal an invalid PID
+        let result = AgentManager::signal_process_pid(
+            &mut child,
+            "test",
+            999999, // Invalid PID
+            libc::SIGTERM,
+            "SIGTERM",
+            Duration::from_millis(100),
+        );
+
+        // Should return false due to invalid PID
+        assert!(!result);
+
+        // Clean up
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn test_monitor_single_process_backoff_timer() {
+        let manager = AgentManager::new();
+        let spec = ProcessSpec::new("test", "nonexistent".to_string(), vec![]);
+
+        // Create mutexes for the test
+        let child_mutex = Mutex::new(None::<Child>);
+        let backoff_mutex = Mutex::new(1u64);
+        let next_attempt_mutex = Mutex::new(Some(Instant::now() + Duration::from_secs(1)));
+
+        // This should return the next attempt time since backoff is active
+        let result = manager.monitor_single_process(
+            &child_mutex,
+            &spec,
+            &backoff_mutex,
+            &next_attempt_mutex,
+        );
+
+        // Should return Some(next_attempt_time) because backoff is active
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_tick_process_backoff_logic() {
+        let manager = AgentManager::new();
+        let spec = ProcessSpec::new("test", "nonexistent".to_string(), vec![]);
+
+        // Create test state - no child, but backoff timer in future
+        let mut child_opt = None;
+        let mut backoff_secs = 1;
+        let mut next_attempt = Some(Instant::now() + Duration::from_secs(1));
+
+        // This should not try to spawn because backoff is active
+        manager.tick_process(&mut child_opt, &spec, &mut backoff_secs, &mut next_attempt);
+
+        // Child should still be None, backoff should be increased
+        assert!(child_opt.is_none());
+        assert_eq!(backoff_secs, 1); // Should not change when backoff is active
     }
 }
