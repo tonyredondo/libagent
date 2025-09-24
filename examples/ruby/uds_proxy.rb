@@ -4,50 +4,50 @@ module LibAgent
   extend FFI::Library
   ffi_lib 'libagent'
 
-  class LibagentHttpBuffer < FFI::Struct
-    layout :data, :pointer,
-           :len,  :size_t
-  end
+  # Callback types
+  callback :response_callback, [:uint16, :pointer, :size_t, :pointer, :size_t, :pointer], :void
+  callback :error_callback, [:pointer, :pointer], :void
 
-  class LibagentHttpResponse < FFI::Struct
-    layout :status,  :uint16,
-           :headers, LibagentHttpBuffer,
-           :body,    LibagentHttpBuffer
-  end
+  attach_function :ProxyTraceAgent, [:string, :string, :string, :pointer, :size_t, :response_callback, :error_callback, :pointer], :int32
+end
 
-  attach_function :ProxyTraceAgent, [:string, :string, :string, :pointer, :size_t, :pointer, :pointer], :int32
-  attach_function :FreeHttpResponse, [LibagentHttpResponse.by_ref], :void
-  attach_function :FreeCString, [:pointer], :void
+# Callback implementations
+def on_response(status, headers_data, headers_len, body_data, body_len, user_data)
+  puts "Status: #{status}"
+  unless headers_data.null? || headers_len == 0
+    headers = headers_data.read_string_length(headers_len)
+    puts "Headers:\n#{headers}"
+  end
+  unless body_data.null? || body_len == 0
+    body = body_data.read_string_length(body_len)
+    puts "Body:\n#{body}"
+  end
+end
+
+def on_error(error_message, user_data)
+  if !error_message.null?
+    puts "error: #{error_message.read_string}"
+  else
+    puts "error: unknown error"
+  end
 end
 
 def main
-  out_resp_ptr = FFI::MemoryPointer.new(:pointer)
-  out_err_ptr  = FFI::MemoryPointer.new(:pointer)
+  # Make the request using callbacks - no manual memory management!
+  rc = LibAgent.ProxyTraceAgent(
+    'GET',                           # method
+    '/info',                         # path
+    "Accept: application/json\n",    # headers
+    FFI::Pointer::NULL,              # body (none)
+    0,                               # body length
+    method(:on_response),            # success callback
+    method(:on_error),               # error callback
+    FFI::Pointer::NULL               # user data (not used)
+  )
 
-  rc = LibAgent.ProxyTraceAgent('GET', '/info', "Accept: application/json\n", FFI::Pointer::NULL, 0, out_resp_ptr, out_err_ptr)
   if rc != 0
-    err_p = out_err_ptr.read_pointer
-    if !err_p.null?
-      puts "error: #{err_p.read_string}"
-      LibAgent.FreeCString(err_p)
-    else
-      puts "error rc=#{rc}"
-    end
-    return
+    puts "ProxyTraceAgent returned error code: #{rc}"
   end
-
-  resp_p = out_resp_ptr.read_pointer
-  resp = LibAgent::LibagentHttpResponse.new(resp_p)
-  puts "Status: #{resp[:status]}"
-  unless resp[:headers][:data].null? || resp[:headers][:len] == 0
-    headers = resp[:headers][:data].read_string_length(resp[:headers][:len])
-    puts "Headers:\n#{headers}"
-  end
-  unless resp[:body][:data].null? || resp[:body][:len] == 0
-    body = resp[:body][:data].read_string_length(resp[:body][:len])
-    puts "Body:\n#{body}"
-  end
-  LibAgent.FreeHttpResponse(resp_p)
 end
 
 main

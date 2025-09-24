@@ -49,49 +49,51 @@ fn main() {
 ## Usage (C / FFI)
 Link your application to the produced shared library and call the exported symbols:
 ```c
-// Provided by libagent shared library
-void Initialize(void);
-void Stop(void);
-// Proxy an HTTP request over Unix Domain Socket (UDS) to the trace-agent
-// Returns 0 on success; negative on error. Allocates output which must be freed.
-typedef struct {
-  unsigned char *data;
-  size_t len;
-} LibagentHttpBuffer;
+#include "libagent.h"
 
-typedef struct {
-  uint16_t status;
-  LibagentHttpBuffer headers; // CRLF-separated header lines
-  LibagentHttpBuffer body;
-} LibagentHttpResponse;
+// Callback function for successful responses
+void on_response(uint16_t status,
+                 const uint8_t* headers_data, size_t headers_len,
+                 const uint8_t* body_data, size_t body_len,
+                 void* user_data) {
+    printf("Status: %u\n", status);
+    printf("Headers: %.*s\n", (int)headers_len, (const char*)headers_data);
+    printf("Body: %.*s\n", (int)body_len, (const char*)body_data);
+}
 
-int32_t ProxyTraceAgent(const char *method,
-                           const char *path,
-                           const char *headers,
-                           const unsigned char *body_ptr,
-                           size_t body_len,
-                           LibagentHttpResponse **out_resp,
-                           char **out_err);
-
-void FreeHttpBuffer(LibagentHttpBuffer buf);
-void FreeHttpResponse(LibagentHttpResponse *resp);
-void FreeCString(char *s);
+// Callback function for errors
+void on_error(const char* error_message, void* user_data) {
+    fprintf(stderr, "Error: %s\n", error_message);
+}
 
 int main(void) {
     Initialize();
-    // ... your program ...
+
+    // Make a request using callbacks - no manual memory management!
+    int32_t result = ProxyTraceAgent(
+        "GET",                           // method
+        "/info",                         // path
+        "Accept: application/json\n",    // headers
+        NULL, 0,                         // body (none)
+        on_response,                     // success callback
+        on_error,                        // error callback
+        NULL                             // user data (not used here)
+    );
+
+    // ... your program continues ...
+
     Stop();
     return 0;
 }
 ```
 
-Proxy notes:
+Callback API notes:
 - Socket path resolution (Unix): env `LIBAGENT_TRACE_AGENT_UDS` or default `/var/run/datadog/apm.socket`.
 - Pipe name resolution (Windows): env `LIBAGENT_TRACE_AGENT_PIPE` or default `trace-agent` (full path: `\\.\\pipe\\trace-agent`).
 - Timeout: 50 seconds for both Unix UDS and Windows Named Pipe connections.
 - `headers`: string with lines `Name: Value` separated by `\n` or `\r\n`.
-- `out_resp->headers`: same format, concatenated CRLF lines; free with `FreeHttpBuffer` via `FreeHttpResponse`.
-- Free all allocated outputs with the provided free functions.
+- Callbacks receive data directly - no memory management required!
+- `on_error` callback may be `NULL` if error handling is not needed.
 
 Notes: The `Initialize` and `Stop` FFI functions return `void`. The `ProxyTraceAgent` function returns an `int32_t` error code (0 for success, negative for errors). Operational errors are logged; panics in Rust are caught with `catch_unwind` to avoid unwinding across the FFI boundary.
 

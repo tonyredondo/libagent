@@ -9,17 +9,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-typedef struct LibagentHttpBuffer {
-  uint8_t *data;
-  size_t len;
-} LibagentHttpBuffer;
-
-typedef struct LibagentHttpResponse {
-  uint16_t status;
-  struct LibagentHttpBuffer headers;
-  struct LibagentHttpBuffer body;
-} LibagentHttpResponse;
-
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -28,19 +17,14 @@ void Initialize(void);
 
 void Stop(void);
 
-void FreeHttpBuffer(struct LibagentHttpBuffer buf);
-
-void FreeCString(char *s);
-
-void FreeHttpResponse(struct LibagentHttpResponse *resp);
-
 int32_t ProxyTraceAgent(const char *method,
                         const char *path,
                         const char *headers,
                         const uint8_t *body_ptr,
                         size_t body_len,
-                        struct LibagentHttpResponse **out_resp,
-                        char **out_err);
+                        const void *on_response,
+                        const void *on_error,
+                        void *user_data);
 
 #ifdef __cplusplus
 }  // extern "C"

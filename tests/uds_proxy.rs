@@ -9,17 +9,24 @@ use std::path::PathBuf;
 use std::ptr;
 use std::thread;
 
-#[repr(C)]
-struct LibagentHttpBuffer {
-    data: *mut u8,
-    len: usize,
+// Test result storage for callbacks
+#[derive(Clone)]
+struct TestResult {
+    status: Option<u16>,
+    headers: Option<String>,
+    body: Option<Vec<u8>>,
+    error: Option<String>,
 }
 
-#[repr(C)]
-struct LibagentHttpResponse {
-    status: u16,
-    headers: LibagentHttpBuffer,
-    body: LibagentHttpBuffer,
+impl TestResult {
+    fn new() -> Self {
+        Self {
+            status: None,
+            headers: None,
+            body: None,
+            error: None,
+        }
+    }
 }
 
 unsafe extern "C" {
@@ -29,12 +36,51 @@ unsafe extern "C" {
         headers: *const c_char,
         body_ptr: *const u8,
         body_len: usize,
-        out_resp: *mut *mut LibagentHttpResponse,
-        out_err: *mut *mut c_char,
+        on_response: extern "C" fn(
+            u16,
+            *const u8,
+            usize,
+            *const u8,
+            usize,
+            *mut ::std::os::raw::c_void,
+        ),
+        on_error: extern "C" fn(*const c_char, *mut ::std::os::raw::c_void),
+        user_data: *mut ::std::os::raw::c_void,
     ) -> i32;
+}
 
-    fn FreeHttpResponse(resp: *mut LibagentHttpResponse);
-    fn FreeCString(s: *mut c_char);
+// Callback functions for tests
+extern "C" fn test_response_callback(
+    status: u16,
+    headers_data: *const u8,
+    headers_len: usize,
+    body_data: *const u8,
+    body_len: usize,
+    user_data: *mut ::std::os::raw::c_void,
+) {
+    let result = unsafe { &mut *(user_data as *mut TestResult) };
+    result.status = Some(status);
+
+    if !headers_data.is_null() && headers_len > 0 {
+        let headers_slice = unsafe { std::slice::from_raw_parts(headers_data, headers_len) };
+        result.headers = Some(String::from_utf8_lossy(headers_slice).to_string());
+    }
+
+    if !body_data.is_null() && body_len > 0 {
+        let body_slice = unsafe { std::slice::from_raw_parts(body_data, body_len) };
+        result.body = Some(body_slice.to_vec());
+    }
+}
+
+extern "C" fn test_error_callback(
+    error_message: *const c_char,
+    user_data: *mut ::std::os::raw::c_void,
+) {
+    let result = unsafe { &mut *(user_data as *mut TestResult) };
+    if !error_message.is_null() {
+        let c_str = unsafe { std::ffi::CStr::from_ptr(error_message) };
+        result.error = Some(c_str.to_string_lossy().to_string());
+    }
 }
 
 fn write_response(mut stream: impl Write, status: &str, headers: &[(&str, &str)], body: &[u8]) {
@@ -102,8 +148,10 @@ fn uds_proxy_basic() {
     let headers = CString::new("Content-Type: text/plain\nX-Request: yes").unwrap();
     let body: &[u8] = b"hello world";
 
-    let mut resp_ptr: *mut LibagentHttpResponse = ptr::null_mut();
-    let mut err_ptr: *mut c_char = ptr::null_mut();
+    // Prepare result storage
+    let mut result = TestResult::new();
+    let result_ptr = &mut result as *mut TestResult as *mut ::std::os::raw::c_void;
+
     let rc = unsafe {
         ProxyTraceAgent(
             method.as_ptr(),
@@ -111,41 +159,34 @@ fn uds_proxy_basic() {
             headers.as_ptr(),
             body.as_ptr(),
             body.len(),
-            &mut resp_ptr,
-            &mut err_ptr,
+            test_response_callback,
+            test_error_callback,
+            result_ptr,
         )
     };
 
-    assert_eq!(rc, 0, "expected success, got rc={}, err={:?}", rc, unsafe {
-        if err_ptr.is_null() {
-            None
-        } else {
-            Some(CString::from_raw(err_ptr))
-        }
-    });
+    assert_eq!(
+        rc, 0,
+        "expected success, got rc={}, err={:?}",
+        rc, result.error
+    );
 
-    assert!(!resp_ptr.is_null(), "response pointer is null");
-    unsafe {
-        let resp = &*resp_ptr;
-        assert_eq!(resp.status, 201);
-        let headers_slice = std::slice::from_raw_parts(resp.headers.data, resp.headers.len);
-        let headers_str = String::from_utf8_lossy(headers_slice);
-        assert!(
-            headers_str.contains("Content-Type: text/plain"),
-            "headers: {}",
-            headers_str
-        );
-        assert!(
-            headers_str.contains("X-Server: uds-test"),
-            "headers: {}",
-            headers_str
-        );
-
-        let body_slice = std::slice::from_raw_parts(resp.body.data, resp.body.len);
-        assert_eq!(body_slice, b"response");
-
-        FreeHttpResponse(resp_ptr);
-    }
+    assert_eq!(result.status, Some(201));
+    assert!(
+        result
+            .headers
+            .as_ref()
+            .unwrap()
+            .contains("Content-Type: text/plain")
+    );
+    assert!(
+        result
+            .headers
+            .as_ref()
+            .unwrap()
+            .contains("X-Server: uds-test")
+    );
+    assert_eq!(result.body, Some(b"response".to_vec()));
 
     let _ = handle.join();
 }
@@ -204,8 +245,10 @@ fn uds_proxy_chunked() {
     let path = CString::new("/v0.7/traces").unwrap();
     let headers = CString::new("Accept: */*\nX-Request: yes").unwrap();
 
-    let mut resp_ptr: *mut LibagentHttpResponse = ptr::null_mut();
-    let mut err_ptr: *mut c_char = ptr::null_mut();
+    // Prepare result storage
+    let mut result = TestResult::new();
+    let result_ptr = &mut result as *mut TestResult as *mut ::std::os::raw::c_void;
+
     let rc = unsafe {
         ProxyTraceAgent(
             method.as_ptr(),
@@ -213,47 +256,37 @@ fn uds_proxy_chunked() {
             headers.as_ptr(),
             ptr::null(),
             0,
-            &mut resp_ptr,
-            &mut err_ptr,
+            test_response_callback,
+            test_error_callback,
+            result_ptr,
         )
     };
 
     if rc != 0 {
         // Likely skipped; ensure server thread exits cleanly
         let _ = handle.join();
-        if !err_ptr.is_null() {
-            unsafe {
-                FreeCString(err_ptr);
-            }
-        }
-        eprintln!("skipping uds_proxy_chunked: rc={} err set", rc);
+        eprintln!(
+            "skipping uds_proxy_chunked: rc={} err={:?}",
+            rc, result.error
+        );
         return;
     }
 
-    assert!(!resp_ptr.is_null(), "response pointer is null");
-    unsafe {
-        let resp = &*resp_ptr;
-        assert_eq!(resp.status, 200);
-        let headers_slice = std::slice::from_raw_parts(resp.headers.data, resp.headers.len);
-        let headers_str = String::from_utf8_lossy(headers_slice);
-        assert!(
-            headers_str
-                .to_ascii_lowercase()
-                .contains("transfer-encoding: chunked"),
-            "headers: {}",
-            headers_str
-        );
-        assert!(
-            headers_str.contains("X-Server: uds-test-chunked"),
-            "headers: {}",
-            headers_str
-        );
-
-        let body_slice = std::slice::from_raw_parts(resp.body.data, resp.body.len);
-        assert_eq!(body_slice, b"hello world");
-
-        FreeHttpResponse(resp_ptr);
-    }
+    assert_eq!(result.status, Some(200));
+    let headers_str = result.headers.as_ref().unwrap();
+    assert!(
+        headers_str
+            .to_ascii_lowercase()
+            .contains("transfer-encoding: chunked"),
+        "headers: {}",
+        headers_str
+    );
+    assert!(
+        headers_str.contains("X-Server: uds-test-chunked"),
+        "headers: {}",
+        headers_str
+    );
+    assert_eq!(result.body, Some(b"hello world".to_vec()));
 
     let _ = handle.join();
 }

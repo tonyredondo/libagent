@@ -17,9 +17,6 @@ include = [
   "Initialize",
   "Stop",
   "ProxyTraceAgent",
-  "FreeHttpBuffer",
-  "FreeHttpResponse",
-  "FreeCString",
 ]
 
 [parse]
