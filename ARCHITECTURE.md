@@ -80,15 +80,15 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 ## Configuration
 - Defaults live in `src/config.rs`:
   - Agent program/args: `datadog-agent`, empty args.
-  - Trace Agent program/args: `trace-agent`, empty args.
+  - Trace Agent program/args: `trace-agent`, empty args (automatically configured with IPC-only settings: TCP port disabled, custom UDS/Named Pipe paths).
   - Monitor interval: 1s.
 - Runtime overrides via environment variables (parsed with shell-words):
   - `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`
   - `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`
   - `LIBAGENT_MONITOR_INTERVAL_SECS`
   - Transport endpoints:
-    - Unix UDS: `LIBAGENT_TRACE_AGENT_UDS` (default: `/var/run/datadog/apm.socket`)
-    - Windows Named Pipe: `LIBAGENT_TRACE_AGENT_PIPE` (default: `trace-agent`, full path `\\.\\pipe\\trace-agent`)
+    - Unix UDS: `LIBAGENT_TRACE_AGENT_UDS` (default: `/tmp/datadog_libagent.socket`)
+    - Windows Named Pipe: `LIBAGENT_TRACE_AGENT_PIPE` (default: `datadog-libagent`, full path `\\.\\pipe\\datadog-libagent`)
 - Example: `LIBAGENT_AGENT_ARGS='-c "quoted arg"'`
 
 ## Logging
@@ -108,8 +108,8 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 - Purpose: allow embedding consumers to proxy HTTP requests to the trace-agent over a local IPC transport without linking HTTP client code.
 - Exported function: `int32_t ProxyTraceAgent(const char* method, const char* path, const char* headers, const uint8_t* body_ptr, size_t body_len, ResponseCallback on_response, ErrorCallback on_error, void* user_data)`.
 - Path resolution:
-  - Unix: UDS socket via `LIBAGENT_TRACE_AGENT_UDS` (default `/var/run/datadog/apm.socket`).
-  - Windows: Named pipe via `LIBAGENT_TRACE_AGENT_PIPE` (default `trace-agent`, full `\\.\\pipe\\trace-agent`).
+  - Unix: UDS socket via `LIBAGENT_TRACE_AGENT_UDS` (default `/tmp/datadog_libagent.socket`).
+  - Windows: Named pipe via `LIBAGENT_TRACE_AGENT_PIPE` (default `datadog-libagent`, full `\\.\\pipe\\datadog-libagent`).
 - Timeout: 50 seconds for both Unix UDS and Windows Named Pipe connections.
 - Request shape: headers are a single string with lines `Name: Value` separated by `\n` or `\r\n`; body is an optional byte slice.
 - Response: delivered via callback with status (u16), headers (bytes), body (bytes) - no manual memory management required.

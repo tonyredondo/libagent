@@ -230,6 +230,32 @@ impl AgentManager {
         let mut cmd = Command::new(&spec.program);
         cmd.args(&spec.args).stdin(Stdio::null());
 
+        // Configure trace-agent with IPC-only settings
+        if spec.name == "trace-agent" {
+            // Disable TCP receiver
+            cmd.env("DD_APM_RECEIVER_PORT", "0");
+
+            #[cfg(unix)]
+            {
+                // Create temp directory for socket if it doesn't exist
+                let temp_dir = std::env::temp_dir();
+                let socket_path = temp_dir.join("datadog_libagent.socket");
+                if let Some(parent) = socket_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                cmd.env(
+                    "DD_APM_RECEIVER_SOCKET",
+                    socket_path.to_string_lossy().as_ref(),
+                );
+            }
+
+            #[cfg(windows)]
+            {
+                // Use custom pipe name for libagent
+                cmd.env("DD_APM_WINDOWS_PIPE_NAME", "datadog-libagent");
+            }
+        }
+
         // In debug mode, inherit stdout/stderr so the child processes' output is visible.
         // Otherwise, silence both streams to avoid chatty output in host applications.
         if child_stdio_inherit() {

@@ -25,6 +25,7 @@ Outputs include a Rust `rlib` and a shared library (`.so/.dylib/.dll`) per the c
 - Process Manager (`manager.rs`): spawns Agent and Trace Agent; monitors with periodic ticks and exponential backoff; restarts on exit.
   - Unix: children run in their own session (`setsid`); sends `SIGTERM`, then `SIGKILL` to the process group on shutdown.
   - Windows: assigns children to a Job; terminating the Job kills the tree.
+  - **Trace Agent Configuration**: automatically configured for IPC-only operation (TCP port disabled, custom UDS/Named Pipe paths).
 - Configuration (`config.rs`): compile-time defaults with env overrides parsed via `shell-words`; tunables include programs, args, and monitor interval.
 - FFI (`ffi.rs`): exports `Initialize`, `Stop`, and a transport-agnostic trace-agent proxy (`ProxyTraceAgent`) with `catch_unwind`.
   - Unix: connects over UDS.
@@ -88,8 +89,8 @@ int main(void) {
 ```
 
 Callback API notes:
-- Socket path resolution (Unix): env `LIBAGENT_TRACE_AGENT_UDS` or default `/var/run/datadog/apm.socket`.
-- Pipe name resolution (Windows): env `LIBAGENT_TRACE_AGENT_PIPE` or default `trace-agent` (full path: `\\.\\pipe\\trace-agent`).
+- Socket path resolution (Unix): env `LIBAGENT_TRACE_AGENT_UDS` or default `/tmp/datadog_libagent.socket` (temp directory).
+- Pipe name resolution (Windows): env `LIBAGENT_TRACE_AGENT_PIPE` or default `datadog-libagent` (full path: `\\.\\pipe\\datadog-libagent`).
 - Timeout: 50 seconds for both Unix UDS and Windows Named Pipe connections.
 - `headers`: string with lines `Name: Value` separated by `\n` or `\r\n`.
 - Callbacks receive data directly - no memory management required!
@@ -146,8 +147,8 @@ cbindgen --config cbindgen.toml --crate libagent --output include/libagent.h
 - Purpose: allow embedding hosts to call the trace-agent HTTP API without bundling an HTTP client.
 - Function: `ProxyTraceAgent(method, path, headers, body_ptr, body_len, on_response, on_error, user_data)`.
 - Transport:
-  - Unix: UDS. Path from env `LIBAGENT_TRACE_AGENT_UDS` or default `/var/run/datadog/apm.socket`.
-  - Windows: Named Pipe. Pipe name from env `LIBAGENT_TRACE_AGENT_PIPE` or default `trace-agent`. Full path: `\\.\\pipe\\trace-agent`.
+  - Unix: UDS. Path from env `LIBAGENT_TRACE_AGENT_UDS` or default `/tmp/datadog_libagent.socket`.
+  - Windows: Named Pipe. Pipe name from env `LIBAGENT_TRACE_AGENT_PIPE` or default `datadog-libagent`. Full path: `\\.\\pipe\\datadog-libagent`.
 - Timeout: 50 seconds for both Unix UDS and Windows Named Pipe connections.
 - Headers format: one string with lines `Name: Value` separated by `\n` or `\r\n`.
 - Response: delivered via callback with status (u16), headers (bytes), body (bytes) - no manual memory management!

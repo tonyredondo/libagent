@@ -151,14 +151,17 @@ pub fn get_monitor_interval_secs() -> u64 {
     }
 }
 
-/// Default Unix Domain Socket path for the trace agent.
-#[cfg(unix)]
-pub(crate) const TRACE_AGENT_UDS_DEFAULT: &str = "/var/run/datadog/apm.socket";
-
 /// Returns trace agent UDS path, allowing env override via `LIBAGENT_TRACE_AGENT_UDS`.
+/// For libagent, uses a custom temp path to avoid conflicts with system trace-agent.
 #[cfg(unix)]
 pub fn get_trace_agent_uds_path() -> String {
-    std::env::var(ENV_TRACE_AGENT_UDS).unwrap_or_else(|_| TRACE_AGENT_UDS_DEFAULT.to_string())
+    std::env::var(ENV_TRACE_AGENT_UDS).unwrap_or_else(|_| {
+        let temp_dir = std::env::temp_dir();
+        temp_dir
+            .join("datadog_libagent.socket")
+            .to_string_lossy()
+            .to_string()
+    })
 }
 
 /// Default Windows Named Pipe name for the trace agent (used as \\.\\pipe\\<name>).
@@ -166,9 +169,10 @@ pub fn get_trace_agent_uds_path() -> String {
 pub(crate) const TRACE_AGENT_PIPE_DEFAULT: &str = "trace-agent";
 
 /// Returns trace agent Windows Named Pipe name, allowing env override via `LIBAGENT_TRACE_AGENT_PIPE`.
+/// For libagent, uses a custom pipe name to avoid conflicts with system trace-agent.
 #[cfg(windows)]
 pub fn get_trace_agent_pipe_name() -> String {
-    std::env::var(ENV_TRACE_AGENT_PIPE).unwrap_or_else(|_| TRACE_AGENT_PIPE_DEFAULT.to_string())
+    std::env::var(ENV_TRACE_AGENT_PIPE).unwrap_or_else(|_| "datadog-libagent".to_string())
 }
 
 /// Returns initial backoff seconds for respawn, with validation.
@@ -366,9 +370,14 @@ mod tests {
         unsafe {
             std::env::remove_var(ENV_TRACE_AGENT_UDS);
         }
-        // Test default value
+        // Test default value - should be temp directory + datadog_libagent.socket
         let path = get_trace_agent_uds_path();
-        assert_eq!(path, TRACE_AGENT_UDS_DEFAULT);
+        let temp_dir = std::env::temp_dir();
+        let expected = temp_dir
+            .join("datadog_libagent.socket")
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(path, expected);
     }
 
     #[cfg(unix)]
@@ -392,9 +401,9 @@ mod tests {
         unsafe {
             std::env::remove_var(ENV_TRACE_AGENT_PIPE);
         }
-        // Test default value
+        // Test default value - should be custom libagent pipe name
         let name = get_trace_agent_pipe_name();
-        assert_eq!(name, TRACE_AGENT_PIPE_DEFAULT);
+        assert_eq!(name, "datadog-libagent");
     }
 
     #[cfg(windows)]

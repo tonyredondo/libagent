@@ -7,8 +7,8 @@ Prerequisites
 - Ensure the dynamic library can be found by your loader:
   - Linux: export `LD_LIBRARY_PATH=target/debug` (or `target/release`).
   - macOS: export `DYLD_LIBRARY_PATH=target/debug` (or `target/release`).
-- Socket path (Unix): set `LIBAGENT_TRACE_AGENT_UDS` to your trace-agent UDS path if not using the default `/var/run/datadog/apm.socket`.
-- Windows Named Pipe: set `LIBAGENT_TRACE_AGENT_PIPE` to the pipe name (default `trace-agent`). Uses a reusable worker pool (4 workers by default) to handle concurrent requests efficiently under high load, with per-request timeout support (default: 50 seconds).
+- Socket path (Unix): set `LIBAGENT_TRACE_AGENT_UDS` to your trace-agent UDS path if not using the default `/tmp/datadog_libagent.socket`.
+- Windows Named Pipe: set `LIBAGENT_TRACE_AGENT_PIPE` to the pipe name (default `datadog-libagent`). Uses a reusable worker pool (4 workers by default) to handle concurrent requests efficiently under high load, with per-request timeout support (default: 50 seconds).
 
 Notes
 - The examples call `GET /info` with `Accept: application/json` to avoid sending large payloads.
@@ -16,6 +16,7 @@ Notes
 - **Low-level callback API**: Still available for advanced use cases requiring direct callback control
 - Uses callback-based API internally - no manual memory management required!
 - Cross-platform: works on Unix (UDS) and Windows (Named Pipes) platforms.
+- **Trace Agent Configuration**: libagent automatically configures the trace-agent for IPC-only operation (TCP port disabled) using custom paths to prevent conflicts with system installations.
 
 ---
 
@@ -30,7 +31,7 @@ clang -I include -L target/debug -llibagent examples/c/uds_proxy.c -o examples/c
 Run (Unix UDS):
 
 DYLD_LIBRARY_PATH=target/debug \
-LIBAGENT_TRACE_AGENT_UDS=/var/run/datadog/apm.socket \
+LIBAGENT_TRACE_AGENT_UDS=/tmp/datadog_libagent.socket \
 examples/c/uds_proxy
 
 ---
