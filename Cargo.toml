@@ -30,6 +30,15 @@ windows-sys = { version = "0.61", features = [
 [profile.release]
 panic = "abort"
 
+[profile.bench]
+# Use release profile settings for benchmarks
+inherits = "release"
+# Enable debug info for profiling
+debug = true
+
+[[bench]]
+name = "http_benchmarks"
+
 [features]
 default = []
 # When enabled, route logs through the `log` crate instead of writing to stderr

@@ -30,9 +30,10 @@ unsafe extern "system" {
 }
 
 use crate::config::{
-    BACKOFF_INITIAL_SECS, BACKOFF_MAX_SECS, get_agent_args, get_agent_program,
+    get_agent_args, get_agent_program, get_backoff_initial_secs, get_backoff_max_secs,
     get_monitor_interval_secs, get_trace_agent_args, get_trace_agent_program,
 };
+use crate::metrics;
 
 /// Environment variable to enable verbose debug logging.
 ///
@@ -213,9 +214,9 @@ impl AgentManager {
             ),
             agent_child: Mutex::new(None),
             trace_child: Mutex::new(None),
-            agent_backoff_secs: Mutex::new(BACKOFF_INITIAL_SECS),
+            agent_backoff_secs: Mutex::new(get_backoff_initial_secs()),
             agent_next_attempt: Mutex::new(None),
-            trace_backoff_secs: Mutex::new(BACKOFF_INITIAL_SECS),
+            trace_backoff_secs: Mutex::new(get_backoff_initial_secs()),
             trace_next_attempt: Mutex::new(None),
             #[cfg(windows)]
             windows_job: Mutex::new(None),
@@ -256,6 +257,13 @@ impl AgentManager {
         #[cfg(windows)]
         {
             self.assign_child_to_job(&child);
+        }
+
+        // Record metrics
+        match spec.name {
+            "agent" => metrics::get_metrics().record_agent_spawn(),
+            "trace-agent" => metrics::get_metrics().record_trace_agent_spawn(),
+            _ => {} // Unknown process type, don't record
         }
 
         log_debug(&format!(
@@ -369,10 +377,17 @@ impl AgentManager {
         match self.spawn_process(spec) {
             Ok(new_child) => {
                 *child_guard = Some(new_child);
-                *backoff_secs_guard = BACKOFF_INITIAL_SECS;
+                *backoff_secs_guard = get_backoff_initial_secs();
                 *next_attempt_guard = None;
             }
             Err(err) => {
+                // Record failure metrics
+                match spec.name {
+                    "agent" => metrics::get_metrics().record_agent_failure(),
+                    "trace-agent" => metrics::get_metrics().record_trace_agent_failure(),
+                    _ => {}
+                }
+
                 log_error(&format!(
                     "Failed to spawn {} (program='{}', args={:?}): {}. Backing off {}s.",
                     spec.name, spec.program, spec.args, err, *backoff_secs_guard
@@ -381,7 +396,7 @@ impl AgentManager {
                 *next_attempt_guard = Some(now + wait);
                 *backoff_secs_guard = (*backoff_secs_guard)
                     .saturating_mul(2)
-                    .min(BACKOFF_MAX_SECS);
+                    .min(get_backoff_max_secs());
             }
         }
     }
@@ -394,6 +409,9 @@ impl AgentManager {
             log_debug("Initialize called; manager already running.");
             return;
         }
+
+        // Record initialization metrics
+        metrics::get_metrics().record_initialization();
 
         log_info("Starting Agent and Trace Agent...");
 
@@ -871,5 +889,37 @@ mod tests {
         // Clean up
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn test_current_log_level_returns_valid_level() {
+        // Note: OnceLock may already be set from previous tests
+        // Just test that the function returns a valid LogLevel
+        let level = current_log_level();
+        match level {
+            LogLevel::Error | LogLevel::Warn | LogLevel::Info | LogLevel::Debug => {
+                // Valid log level
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_debug_enabled_returns_bool() {
+        // Note: OnceLock may already be set from previous tests
+        // Just test that the function returns a boolean without crashing
+        let _enabled = is_debug_enabled();
+        // We can't reliably test the environment variable behavior due to OnceLock caching
+    }
+
+    #[test]
+    fn test_process_spec_constructor() {
+        let spec = ProcessSpec::new(
+            "test",
+            "/bin/test".to_string(),
+            vec!["arg1".to_string(), "arg2".to_string()],
+        );
+        assert_eq!(spec.name, "test");
+        assert_eq!(spec.program, "/bin/test");
+        assert_eq!(spec.args, vec!["arg1".to_string(), "arg2".to_string()]);
     }
 }

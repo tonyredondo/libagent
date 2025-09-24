@@ -541,4 +541,186 @@ mod tests {
         assert!(request_str.contains("Host: localhost"));
         assert!(request_str.contains("Connection: close"));
     }
+
+    #[test]
+    fn test_parse_header_lines_empty() {
+        let input = "";
+        let headers = parse_header_lines(input);
+        assert_eq!(headers.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_header_lines_malformed() {
+        let input = "Content-Type application/json\nContent-Length: 42\n\n";
+        let headers = parse_header_lines(input);
+        assert_eq!(headers.len(), 1); // Only the valid header
+        assert_eq!(headers[0], ("Content-Length".to_string(), "42".to_string()));
+    }
+
+    #[test]
+    fn test_parse_header_lines_no_colon() {
+        let input = "Content-Type application/json\n\n";
+        let headers = parse_header_lines(input);
+        assert_eq!(headers.len(), 0); // No valid headers
+    }
+
+    #[test]
+    fn test_parse_header_lines_multiple_colons() {
+        let input = "Content-Type: application/json: extra\n\n";
+        let headers = parse_header_lines(input);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(
+            headers[0],
+            (
+                "Content-Type".to_string(),
+                "application/json: extra".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_header_lines_lf_only() {
+        let input = "Content-Type: application/json\nContent-Length: 42\n\n";
+        let headers = parse_header_lines(input);
+        assert_eq!(headers.len(), 2);
+        assert_eq!(
+            headers[0],
+            ("Content-Type".to_string(), "application/json".to_string())
+        );
+        assert_eq!(headers[1], ("Content-Length".to_string(), "42".to_string()));
+    }
+
+    #[test]
+    fn test_parse_header_lines_with_spaces() {
+        let input = "Content-Type:   application/json   \nContent-Length: 42\n\n";
+        let headers = parse_header_lines(input);
+        assert_eq!(headers.len(), 2);
+        assert_eq!(
+            headers[0],
+            ("Content-Type".to_string(), "application/json".to_string())
+        );
+        assert_eq!(headers[1], ("Content-Length".to_string(), "42".to_string()));
+    }
+
+    #[test]
+    fn test_parse_header_lines_case_insensitive_lookup() {
+        let input = "CONTENT-TYPE: application/json\ncontent-length: 42\n\n";
+        let headers = parse_header_lines(input);
+        assert_eq!(headers.len(), 2);
+
+        // Test case insensitive lookup
+        assert_eq!(
+            header_lookup(&headers, "Content-Type"),
+            Some("application/json")
+        );
+        assert_eq!(
+            header_lookup(&headers, "CONTENT-TYPE"),
+            Some("application/json")
+        );
+        assert_eq!(
+            header_lookup(&headers, "content-type"),
+            Some("application/json")
+        );
+        assert_eq!(header_lookup(&headers, "Content-Length"), Some("42"));
+        assert_eq!(header_lookup(&headers, "content-length"), Some("42"));
+    }
+
+    #[test]
+    fn test_read_exact_len_too_short() {
+        use std::io::Cursor;
+        let mut reader = Cursor::new(b"short");
+        let result = read_exact_len(&mut reader, 10);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unexpected EOF"));
+    }
+
+    #[test]
+    fn test_read_chunked_invalid_size() {
+        use std::io::Cursor;
+        let data = b"invalid\r\nchunk\r\n0\r\n\r\n";
+        let mut reader = Cursor::new(data);
+        let result = read_chunked(&mut reader);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_chunked_zero_size() {
+        use std::io::Cursor;
+        let data = b"0\r\n\r\n";
+        let mut reader = Cursor::new(data);
+        let result = read_chunked(&mut reader);
+        assert_eq!(result, Ok(vec![]));
+    }
+
+    #[test]
+    fn test_read_http_body_content_length_invalid() {
+        let headers = vec![("Content-Length".to_string(), "invalid".to_string())];
+        let rest = b"";
+        let mut reader = std::io::empty();
+        let result = read_http_body(&mut reader, rest, &headers);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid Content-Length"));
+    }
+
+    #[test]
+    fn test_read_http_body_chunked_with_rest() {
+        let headers = vec![("Transfer-Encoding".to_string(), "chunked".to_string())];
+        let rest = b"5\r\nhello\r\n0\r\n\r\n";
+        let mut reader = std::io::Cursor::new(rest);
+        let result = read_http_body(&mut reader, &[], &headers);
+        assert_eq!(result, Ok(b"hello".to_vec()));
+    }
+
+    #[test]
+    fn test_read_http_body_chunked_mixed_case() {
+        let headers = vec![("Transfer-Encoding".to_string(), "CHUNKED".to_string())];
+        let rest = b"5\r\nhello\r\n0\r\n\r\n";
+        let mut reader = std::io::Cursor::new(rest);
+        let result = read_http_body(&mut reader, &[], &headers);
+        assert_eq!(result, Ok(b"hello".to_vec()));
+    }
+
+    #[test]
+    fn test_add_default_headers_empty_body_preserves_length() {
+        let mut headers = vec![];
+        let body = b"";
+
+        add_default_headers(&mut headers, body, "test-host");
+
+        // Should add default headers with Content-Length: 0 for empty body
+        assert_eq!(headers.len(), 3);
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "Content-Length" && v == "0")
+        );
+        assert!(headers.iter().any(|(k, v)| k == "Host" && v == "test-host"));
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "Connection" && v == "close")
+        );
+    }
+
+    #[test]
+    fn test_add_default_headers_empty_body() {
+        let mut headers = vec![];
+        let body = b"";
+
+        add_default_headers(&mut headers, body, "test-host");
+
+        // Should add default headers
+        assert_eq!(headers.len(), 3);
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "Content-Length" && v == "0")
+        );
+        assert!(headers.iter().any(|(k, v)| k == "Host" && v == "test-host"));
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "Connection" && v == "close")
+        );
+    }
 }

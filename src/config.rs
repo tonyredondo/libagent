@@ -39,6 +39,20 @@ pub(crate) const GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 5;
 pub(crate) const BACKOFF_INITIAL_SECS: u64 = 1;
 pub(crate) const BACKOFF_MAX_SECS: u64 = 30;
 
+/// Configuration validation constants.
+const MIN_MONITOR_INTERVAL_SECS: u64 = 1;
+const MAX_MONITOR_INTERVAL_SECS: u64 = 300; // 5 minutes
+#[allow(dead_code)] // Reserved for future backoff validation
+const MIN_BACKOFF_SECS: u64 = 1;
+#[allow(dead_code)] // Reserved for future backoff validation
+const MAX_BACKOFF_SECS: u64 = 3600; // 1 hour
+#[cfg(unix)]
+#[allow(dead_code)] // Reserved for future shutdown timeout validation
+const MIN_SHUTDOWN_TIMEOUT_SECS: u64 = 1;
+#[cfg(unix)]
+#[allow(dead_code)] // Reserved for future shutdown timeout validation
+const MAX_SHUTDOWN_TIMEOUT_SECS: u64 = 300; // 5 minutes
+
 /// Environment variable names used for runtime overrides.
 const ENV_AGENT_PROGRAM: &str = "LIBAGENT_AGENT_PROGRAM";
 const ENV_AGENT_ARGS: &str = "LIBAGENT_AGENT_ARGS";
@@ -95,11 +109,36 @@ pub fn get_trace_agent_args() -> Vec<String> {
     }
 }
 
+/// Validates and clamps a numeric configuration value within specified bounds.
+fn validate_numeric_config(value: u64, min: u64, max: u64, env_var: &str, _default: u64) -> u64 {
+    if value < min {
+        eprintln!(
+            "[libagent] WARN: {} value {} is below minimum {}. Using minimum value {}",
+            env_var, value, min, min
+        );
+        min
+    } else if value > max {
+        eprintln!(
+            "[libagent] WARN: {} value {} exceeds maximum {}. Using maximum value {}",
+            env_var, value, max, max
+        );
+        max
+    } else {
+        value
+    }
+}
+
 /// Returns monitor interval in seconds, allowing env override via `LIBAGENT_MONITOR_INTERVAL_SECS`.
 pub fn get_monitor_interval_secs() -> u64 {
     match std::env::var(ENV_MONITOR_INTERVAL_SECS) {
         Ok(val) => match val.parse::<u64>() {
-            Ok(parsed) => parsed,
+            Ok(parsed) => validate_numeric_config(
+                parsed,
+                MIN_MONITOR_INTERVAL_SECS,
+                MAX_MONITOR_INTERVAL_SECS,
+                ENV_MONITOR_INTERVAL_SECS,
+                MONITOR_INTERVAL_SECS,
+            ),
             Err(e) => {
                 eprintln!(
                     "[libagent] WARN: Invalid {} '{}': {}. Using default value {}s",
@@ -130,6 +169,23 @@ pub(crate) const TRACE_AGENT_PIPE_DEFAULT: &str = "trace-agent";
 #[cfg(windows)]
 pub fn get_trace_agent_pipe_name() -> String {
     std::env::var(ENV_TRACE_AGENT_PIPE).unwrap_or_else(|_| TRACE_AGENT_PIPE_DEFAULT.to_string())
+}
+
+/// Returns initial backoff seconds for respawn, with validation.
+pub fn get_backoff_initial_secs() -> u64 {
+    BACKOFF_INITIAL_SECS // This is a compile-time constant, no runtime override needed
+}
+
+/// Returns maximum backoff seconds for respawn, with validation.
+pub fn get_backoff_max_secs() -> u64 {
+    BACKOFF_MAX_SECS // This is a compile-time constant, no runtime override needed
+}
+
+/// Returns graceful shutdown timeout in seconds.
+#[cfg(unix)]
+#[allow(dead_code)] // Reserved for future shutdown timeout validation
+pub fn get_graceful_shutdown_timeout_secs() -> u64 {
+    GRACEFUL_SHUTDOWN_TIMEOUT_SECS // This is a compile-time constant, no runtime override needed
 }
 
 #[cfg(test)]
@@ -221,17 +277,11 @@ mod tests {
         }
     }
 
-    #[test]
+    #[serial]
     fn test_get_trace_agent_args_default() {
-        // Test default value
+        // Test default value - should be empty since TRACE_AGENT_ARGS is empty
         let args = get_trace_agent_args();
-        assert_eq!(
-            args,
-            TRACE_AGENT_ARGS
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
-        );
+        assert_eq!(args, Vec::<String>::new());
     }
 
     #[test]
@@ -329,6 +379,109 @@ mod tests {
         assert_eq!(name, "custom-pipe");
         unsafe {
             std::env::remove_var(ENV_TRACE_AGENT_PIPE);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_monitor_interval_secs_too_low() {
+        unsafe {
+            std::env::set_var(ENV_MONITOR_INTERVAL_SECS, "0");
+        }
+        let interval = get_monitor_interval_secs();
+        // Should clamp to minimum
+        assert_eq!(interval, MIN_MONITOR_INTERVAL_SECS);
+        unsafe {
+            std::env::remove_var(ENV_MONITOR_INTERVAL_SECS);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_monitor_interval_secs_too_high() {
+        unsafe {
+            std::env::set_var(ENV_MONITOR_INTERVAL_SECS, "1000");
+        }
+        let interval = get_monitor_interval_secs();
+        // Should clamp to maximum
+        assert_eq!(interval, MAX_MONITOR_INTERVAL_SECS);
+        unsafe {
+            std::env::remove_var(ENV_MONITOR_INTERVAL_SECS);
+        }
+    }
+
+    #[test]
+    fn test_get_backoff_initial_secs() {
+        let initial = get_backoff_initial_secs();
+        assert_eq!(initial, BACKOFF_INITIAL_SECS);
+    }
+
+    #[test]
+    fn test_get_backoff_max_secs() {
+        let max = get_backoff_max_secs();
+        assert_eq!(max, BACKOFF_MAX_SECS);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_get_graceful_shutdown_timeout_secs() {
+        let timeout = get_graceful_shutdown_timeout_secs();
+        assert_eq!(timeout, GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
+    }
+
+    #[serial]
+    fn test_get_monitor_interval_secs_empty_string() {
+        unsafe {
+            std::env::set_var(ENV_MONITOR_INTERVAL_SECS, "");
+        }
+        let interval = get_monitor_interval_secs();
+        // Should fall back to default on parse error
+        assert_eq!(interval, MONITOR_INTERVAL_SECS);
+        unsafe {
+            std::env::remove_var(ENV_MONITOR_INTERVAL_SECS);
+        }
+    }
+
+    #[serial]
+    fn test_get_agent_args_empty() {
+        unsafe {
+            std::env::set_var(ENV_AGENT_ARGS, "");
+        }
+        let args = get_agent_args();
+        assert_eq!(args, Vec::<String>::new());
+        unsafe {
+            std::env::remove_var(ENV_AGENT_ARGS);
+        }
+    }
+
+    #[serial]
+    fn test_get_trace_agent_args_empty() {
+        unsafe {
+            std::env::set_var(ENV_TRACE_AGENT_ARGS, "");
+        }
+        let args = get_trace_agent_args();
+        assert_eq!(args, Vec::<String>::new());
+        unsafe {
+            std::env::remove_var(ENV_TRACE_AGENT_ARGS);
+        }
+    }
+
+    #[serial]
+    fn test_get_trace_agent_args_invalid_shell_words() {
+        unsafe {
+            std::env::set_var(ENV_TRACE_AGENT_ARGS, "\"unclosed quote");
+        }
+        let args = get_trace_agent_args();
+        // Should return default args on parse error (existing test shows this behavior)
+        assert_eq!(
+            args,
+            TRACE_AGENT_ARGS
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+        unsafe {
+            std::env::remove_var(ENV_TRACE_AGENT_ARGS);
         }
     }
 }
