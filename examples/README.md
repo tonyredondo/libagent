@@ -17,6 +17,7 @@ Notes
 - Uses callback-based API internally - no manual memory management required!
 - Cross-platform: works on Unix (UDS) and Windows (Named Pipes) platforms.
 - **Trace Agent Configuration**: libagent automatically configures the trace-agent for IPC-only operation (TCP port disabled) using custom paths to prevent conflicts with system installations.
+- **Smart Process Management**: libagent only spawns agents when IPC resources are available and no existing Datadog agents are detected, ensuring cooperation rather than competition.
 
 ---
 

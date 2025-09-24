@@ -82,6 +82,9 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
   - Agent program/args: `datadog-agent`, empty args.
   - Trace Agent program/args: `trace-agent`, empty args (automatically configured with IPC-only settings: TCP port disabled, custom UDS/Named Pipe paths).
   - Monitor interval: 1s.
+- Smart spawning logic:
+  - Trace-agent: Only spawns if IPC socket/pipe is available (prevents conflicts)
+  - Agent: Only spawns if remote configuration service is not available (cooperates with existing installations)
 - Runtime overrides via environment variables (parsed with shell-words):
   - `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`
   - `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`
@@ -99,6 +102,8 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 ## Idempotency and Safety
 - `initialize()` and `stop()` are idempotent.
 - FFI functions catch panics with `catch_unwind` to prevent unwinding across the FFI boundary.
+- Process ownership safety: Only terminates processes that libagent spawned (respects external processes).
+- Resource conflict prevention: Smart spawning prevents multiple instances from competing for IPC resources.
 
 ## FFI Surface
 - C API: `Initialize(void)`, `Stop(void)`, and `ProxyTraceAgent(...)` (see `include/libagent.h`).
@@ -120,6 +125,7 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 ## Testing Strategy
 - Integration tests under `tests/` use temporary stub scripts to simulate child behavior.
 - `serial_test` isolates global state; environment mutations are marked `unsafe` due to Rust 2024 nightly constraints.
+- Smart spawning logic is validated through respawn tests (ensures agents spawn when resources are available).
 - Cross‑platform coverage:
   - Unix: start/stop lifecycle and respawn/backoff behavior.
   - Unix: UDS proxy (basic + chunked) in `tests/uds_proxy.rs` (skips under sandboxed environments which deny UDS binds).

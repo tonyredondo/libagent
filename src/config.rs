@@ -164,10 +164,6 @@ pub fn get_trace_agent_uds_path() -> String {
     })
 }
 
-/// Default Windows Named Pipe name for the trace agent (used as \\.\\pipe\\<name>).
-#[cfg(windows)]
-pub(crate) const TRACE_AGENT_PIPE_DEFAULT: &str = "trace-agent";
-
 /// Returns trace agent Windows Named Pipe name, allowing env override via `LIBAGENT_TRACE_AGENT_PIPE`.
 /// For libagent, uses a custom pipe name to avoid conflicts with system trace-agent.
 #[cfg(windows)]
@@ -365,11 +361,15 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[serial]
     fn test_get_trace_agent_uds_path_default() {
         // Clean up any environment variables from previous tests
         unsafe {
             std::env::remove_var(ENV_TRACE_AGENT_UDS);
         }
+        // Double-check cleanup
+        assert!(std::env::var(ENV_TRACE_AGENT_UDS).is_err());
+
         // Test default value - should be temp directory + datadog_libagent.socket
         let path = get_trace_agent_uds_path();
         let temp_dir = std::env::temp_dir();
@@ -384,14 +384,23 @@ mod tests {
     #[test]
     #[serial]
     fn test_get_trace_agent_uds_path_override() {
+        // Ensure clean state
+        unsafe {
+            std::env::remove_var(ENV_TRACE_AGENT_UDS);
+        }
+
         unsafe {
             std::env::set_var(ENV_TRACE_AGENT_UDS, "/tmp/custom.socket");
         }
         let path = get_trace_agent_uds_path();
         assert_eq!(path, "/tmp/custom.socket");
+
+        // Clean up
         unsafe {
             std::env::remove_var(ENV_TRACE_AGENT_UDS);
         }
+        // Verify cleanup
+        assert!(std::env::var(ENV_TRACE_AGENT_UDS).is_err());
     }
 
     #[cfg(windows)]

@@ -26,6 +26,7 @@ Outputs include a Rust `rlib` and a shared library (`.so/.dylib/.dll`) per the c
   - Unix: children run in their own session (`setsid`); sends `SIGTERM`, then `SIGKILL` to the process group on shutdown.
   - Windows: assigns children to a Job; terminating the Job kills the tree.
   - **Trace Agent Configuration**: automatically configured for IPC-only operation (TCP port disabled, custom UDS/Named Pipe paths).
+  - **Smart Spawning**: Trace-agent only spawns if IPC socket/pipe is available; Agent only spawns if no existing remote config service exists.
 - Configuration (`config.rs`): compile-time defaults with env overrides parsed via `shell-words`; tunables include programs, args, and monitor interval.
 - FFI (`ffi.rs`): exports `Initialize`, `Stop`, and a transport-agnostic trace-agent proxy (`ProxyTraceAgent`) with `catch_unwind`.
   - Unix: connects over UDS.
@@ -33,6 +34,25 @@ Outputs include a Rust `rlib` and a shared library (`.so/.dylib/.dll`) per the c
 - Logging: `LIBAGENT_LOG` level and `LIBAGENT_DEBUG` to inherit child stdout/stderr.
 
 For a deeper dive, see ARCHITECTURE.md.
+
+## Process Spawning Behavior
+
+libagent implements smart process spawning to prevent conflicts and ensure cooperation:
+
+### Trace-Agent Spawning
+- **Spawns when**: IPC socket/pipe (`/tmp/datadog_libagent.socket` or `\\.\pipe\datadog-libagent`) is available
+- **Skips when**: Another process is already using the IPC endpoint
+- **Configuration**: IPC-only mode (TCP disabled, custom socket/pipe path)
+
+### Agent Spawning
+- **Spawns when**: No existing Datadog agent provides remote configuration on `localhost:5001`
+- **Skips when**: Existing agent is running and provides remote config service
+- **Purpose**: Avoid conflicts with system-wide Datadog installations
+
+### Monitoring & Recovery
+- Both processes are continuously monitored and automatically restarted on failure
+- Only processes spawned by libagent are managed (external processes are respected)
+- Exponential backoff prevents resource exhaustion during failure scenarios
 
 ## Usage (Rust)
 ```rust

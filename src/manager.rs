@@ -146,6 +146,78 @@ fn child_stdio_inherit() -> bool {
     false
 }
 
+/// Checks if a Unix Domain Socket is already in use by trying to connect to it.
+/// Returns true if the socket exists and accepts connections (another process is listening).
+#[cfg(unix)]
+fn is_socket_in_use(socket_path: &std::path::Path) -> bool {
+    use std::os::unix::net::UnixStream;
+
+    // Try to connect to the socket - if successful, another process is listening
+    match UnixStream::connect(socket_path) {
+        Ok(_) => {
+            log_debug(&format!(
+                "Socket {} is already in use by another process",
+                socket_path.display()
+            ));
+            true
+        }
+        Err(_) => {
+            // Socket doesn't exist or isn't accepting connections
+            false
+        }
+    }
+}
+
+/// Checks if a Windows Named Pipe is already in use.
+/// For Windows, we check if the pipe exists by attempting to connect.
+/// This is a best-effort check since Windows named pipes don't have a simple existence check.
+#[cfg(windows)]
+fn is_pipe_in_use(pipe_name: &str) -> bool {
+    let pipe_path = format!("\\\\.\\pipe\\{}", pipe_name);
+
+    // Try to open the pipe for reading/writing - if successful, another process has it open
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&pipe_path)
+    {
+        Ok(_) => {
+            log_debug(&format!(
+                "Pipe {} is already in use by another process",
+                pipe_name
+            ));
+            true
+        }
+        Err(_) => {
+            // Pipe doesn't exist or isn't accepting connections
+            false
+        }
+    }
+}
+
+/// Checks if the remote configuration gRPC service is available on the main agent.
+/// Returns true if there's already an agent running that provides remote config.
+/// If true, we should skip spawning our own agent to avoid conflicts.
+fn is_remote_config_available() -> bool {
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    // Check if we can connect to the default agent gRPC port
+    match TcpStream::connect_timeout(
+        &"127.0.0.1:5001".parse().unwrap(),
+        Duration::from_millis(100),
+    ) {
+        Ok(_) => {
+            log_debug("Remote configuration service is available on existing agent");
+            true
+        }
+        Err(_) => {
+            log_debug("Remote configuration service not available, will spawn our own agent");
+            false
+        }
+    }
+}
+
 /// Specification of a subprocess to manage.
 #[derive(Clone, Debug)]
 struct ProcessSpec {
@@ -399,6 +471,40 @@ impl AgentManager {
         let now = Instant::now();
         if next_attempt_guard.as_ref().is_some_and(|&next| now < next) {
             return;
+        }
+
+        // Check if we should spawn based on resource availability
+        match spec.name {
+            "trace-agent" => {
+                #[cfg(unix)]
+                {
+                    let socket_path = std::env::temp_dir().join("datadog_libagent.socket");
+                    if is_socket_in_use(&socket_path) {
+                        log_debug(
+                            "Skipping trace-agent spawn - socket already in use by another process",
+                        );
+                        return;
+                    }
+                }
+                #[cfg(windows)]
+                {
+                    if is_pipe_in_use("datadog-libagent") {
+                        log_debug(
+                            "Skipping trace-agent spawn - pipe already in use by another process",
+                        );
+                        return;
+                    }
+                }
+            }
+            "agent" => {
+                if is_remote_config_available() {
+                    log_debug(
+                        "Skipping agent spawn - remote configuration service already available from existing agent",
+                    );
+                    return;
+                }
+            }
+            _ => {}
         }
 
         // Try to spawn
@@ -1061,5 +1167,30 @@ mod tests {
         // Child should still be None, backoff should be increased
         assert!(child_opt.is_none());
         assert_eq!(backoff_secs, 1); // Should not change when backoff is active
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_socket_in_use_nonexistent() {
+        // Test with a socket path that definitely doesn't exist
+        let nonexistent_path = std::path::Path::new("/tmp/definitely-nonexistent-socket");
+        // Should return false since no process is listening on this socket
+        assert!(!is_socket_in_use(nonexistent_path));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_is_pipe_in_use_nonexistent() {
+        // Test with a pipe name that definitely doesn't exist
+        let nonexistent_pipe = "definitely-nonexistent-pipe";
+        // Should return false since no process has this pipe open
+        assert!(!is_pipe_in_use(nonexistent_pipe));
+    }
+
+    #[test]
+    fn test_is_remote_config_available_no_service() {
+        // In test environment, no agent should be running on localhost:5001
+        // So this should return false
+        assert!(!is_remote_config_available());
     }
 }

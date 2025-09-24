@@ -81,7 +81,7 @@ unsafe fn cstr_arg<'a>(p: *const c_char, name: &str) -> Result<&'a str, String> 
 }
 
 /// Validate and extract arguments for ProxyTraceAgent (callback version).
-fn validate_proxy_args_new(
+fn validate_proxy_args(
     method: *const c_char,
     path: *const c_char,
     headers: *const c_char,
@@ -171,7 +171,7 @@ pub extern "C" fn ProxyTraceAgent(
     catch_unwind(AssertUnwindSafe(|| {
         // validate and extract arguments
         let (method, path, headers, body) =
-            match validate_proxy_args_new(method, path, headers, body_ptr, body_len) {
+            match validate_proxy_args(method, path, headers, body_ptr, body_len) {
                 Ok(args) => args,
                 Err(err_msg) => {
                     if !on_error.is_null() {
@@ -282,7 +282,7 @@ mod tests {
         let path = CString::new("/test").unwrap();
         let headers = CString::new("Content-Type: application/json").unwrap();
 
-        let result = validate_proxy_args_new(
+        let result = validate_proxy_args(
             std::ptr::null(), // null method
             path.as_ptr(),
             headers.as_ptr(),
@@ -301,7 +301,7 @@ mod tests {
         let method = CString::new("GET").unwrap();
         let headers = CString::new("Content-Type: application/json").unwrap();
 
-        let result = validate_proxy_args_new(
+        let result = validate_proxy_args(
             method.as_ptr(),
             std::ptr::null(), // null path
             headers.as_ptr(),
@@ -324,7 +324,7 @@ mod tests {
         let invalid_method = vec![0x80, 0x81, 0x00]; // Invalid UTF-8 followed by null terminator
         let method_cstr = unsafe { CString::from_vec_with_nul_unchecked(invalid_method) };
 
-        let result = validate_proxy_args_new(
+        let result = validate_proxy_args(
             method_cstr.as_ptr(),
             path.as_ptr(),
             headers.as_ptr(),
@@ -347,7 +347,7 @@ mod tests {
         let invalid_path = vec![0x80, 0x81, 0x00]; // Invalid UTF-8 followed by null terminator
         let path_cstr = unsafe { CString::from_vec_with_nul_unchecked(invalid_path) };
 
-        let result = validate_proxy_args_new(
+        let result = validate_proxy_args(
             method.as_ptr(),
             path_cstr.as_ptr(),
             headers.as_ptr(),
@@ -366,7 +366,7 @@ mod tests {
         let method = CString::new("GET").unwrap();
         let path = CString::new("/test").unwrap();
 
-        let result = validate_proxy_args_new(
+        let result = validate_proxy_args(
             method.as_ptr(),
             path.as_ptr(),
             std::ptr::null(), // null headers
@@ -389,7 +389,7 @@ mod tests {
         let invalid_headers = vec![0x80, 0x81, 0x00]; // Invalid UTF-8 followed by null terminator
         let headers_cstr = unsafe { CString::from_vec_with_nul_unchecked(invalid_headers) };
 
-        let result = validate_proxy_args_new(
+        let result = validate_proxy_args(
             method.as_ptr(),
             path.as_ptr(),
             headers_cstr.as_ptr(),
@@ -411,7 +411,7 @@ mod tests {
         let body_data = b"{\"test\": \"data\"}";
         let body_len = body_data.len();
 
-        let result = validate_proxy_args_new(
+        let result = validate_proxy_args(
             method.as_ptr(),
             path.as_ptr(),
             headers.as_ptr(),
@@ -434,7 +434,7 @@ mod tests {
         let path = CString::new("/test").unwrap();
         let headers = CString::new("Content-Type: application/json").unwrap();
 
-        let result = validate_proxy_args_new(
+        let result = validate_proxy_args(
             method.as_ptr(),
             path.as_ptr(),
             headers.as_ptr(),
