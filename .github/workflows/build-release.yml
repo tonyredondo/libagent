@@ -1,0 +1,138 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [ master, main ]
+  release:
+    types: [ published ]
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x64 (glibc)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux
+            arch: x64
+
+          # Linux arm64 (glibc)
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            platform: linux
+            arch: arm64
+
+          # Linux x64 (musl - Alpine compatible)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            platform: alpine
+            arch: x64
+
+          # Linux arm64 (musl - Alpine compatible)
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            platform: alpine
+            arch: arm64
+
+          # macOS arm64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: macos
+            arch: arm64
+
+          # Windows x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows
+            arch: x64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ matrix.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.os }}-${{ matrix.target }}-cargo-
+
+      # Build the library
+      - name: Build release
+        run: cargo +nightly build --target ${{ matrix.target }} --release
+
+      # Create artifact directory and copy files
+      - name: Prepare artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+
+          # Copy the dynamic library (different extensions per platform)
+          # Note: musl targets don't support cdylib, only rlib
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            cp target/${{ matrix.target }}/release/libagent.dll artifacts/ 2>/dev/null || true
+          elif [[ "${{ matrix.target }}" == *"darwin"* ]]; then
+            cp target/${{ matrix.target }}/release/liblibagent.dylib artifacts/ 2>/dev/null || true
+          elif [[ "${{ matrix.target }}" != *"musl"* ]]; then
+            cp target/${{ matrix.target }}/release/liblibagent.so artifacts/ 2>/dev/null || true
+          fi
+
+          # Copy header file
+          cp include/libagent.h artifacts/
+
+      # Upload artifacts for all builds
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libagent-${{ matrix.platform }}-${{ matrix.arch }}
+          path: artifacts/
+          retention-days: 30
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Create release archives
+        run: |
+          mkdir -p release-artifacts
+
+          # Create individual archives for each platform
+          for dir in artifacts/*/; do
+            if [ -d "$dir" ]; then
+              dirname=$(basename "$dir")
+              echo "Creating archive for $dirname"
+              tar -czf "release-artifacts/libagent-${dirname}.tar.gz" -C artifacts "$dirname"
+            fi
+          done
+
+          # List created archives
+          ls -la release-artifacts/
+
+      - name: Upload release artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*.tar.gz
+          token: ${{ secrets.GITHUB_TOKEN }}

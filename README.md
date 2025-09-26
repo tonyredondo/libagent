@@ -207,5 +207,14 @@ Examples in multiple languages are under `examples/` (C, Go, Java/JNA, .NET, Nod
 
 Note: On Rust 2024 nightly, environment mutations in tests (e.g., `std::env::set_var`) are `unsafe`; wrap them in `unsafe { ... }` or use helpers. See AGENTS.md for guidance.
 
+## Releases
+Automated builds are created for the following platforms on every commit:
+- **Linux x64/arm64 (glibc)**: Standard Linux distributions
+- **Linux x64/arm64 (musl)**: Alpine Linux compatible
+- **macOS arm64**: Apple Silicon
+- **Windows x64**: MSVC
+
+Release artifacts are automatically attached when you create a new GitHub release.
+
 ## Contributing
 See AGENTS.md for project structure, style, test guidance, and PR expectations.

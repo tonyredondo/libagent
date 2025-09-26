@@ -30,6 +30,9 @@ windows-sys = { version = "0.61", features = [
 
 [profile.release]
 panic = "abort"
+opt-level = "z"     # Optimize for size
+lto = true          # Link-time optimization
+codegen-units = 1   # Better optimization (slower builds)
 
 [profile.bench]
 # Use release profile settings for benchmarks
