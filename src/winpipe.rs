@@ -6,6 +6,7 @@
 //! Timeout is enforced using a separate thread with cancellation support (default: 50 seconds).
 //! The request thread can be interrupted at key points during the HTTP transaction.
 
+use crate::manager::log_debug;
 use std::io::Write;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -174,16 +175,27 @@ pub fn request_over_named_pipe(
     get_worker_pool()?;
 
     // Submit work to the worker pool
+    log_debug(&format!(
+        "PIPE: submitting {} {} request to worker pool",
+        method, path
+    ));
     submit_work_to_pool(work_item)?;
 
     // Wait for the result with timeout
     match result_rx.recv_timeout(timeout) {
-        Ok(result) => result,
+        Ok(result) => {
+            log_debug("PIPE: received result from worker pool");
+            result
+        }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            Err(format!("request timed out after {:?}", timeout))
+            let err = format!("request timed out after {:?}", timeout);
+            log_debug(&format!("PIPE: {}", err));
+            Err(err)
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            Err("worker thread disconnected unexpectedly".to_string())
+            let err = "worker thread disconnected unexpectedly".to_string();
+            log_debug(&format!("PIPE: {}", err));
+            Err(err)
         }
     }
 }
@@ -196,30 +208,71 @@ fn perform_request(
     headers: Vec<(String, String)>,
     body: &[u8],
 ) -> Result<Response, String> {
+    log_debug(&format!("PIPE: opening pipe: {}", full_path));
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(full_path)
-        .map_err(|e| format!("failed to open pipe {}: {}", full_path, e))?;
+        .map_err(|e| {
+            let err = format!("failed to open pipe {}: {}", full_path, e);
+            log_debug(&format!("PIPE: open failed: {}", err));
+            err
+        })?;
 
     // Write request
     let req = build_request(method, path, headers, body);
-    file.write_all(&req)
-        .map_err(|e| format!("write error: {}", e))?;
+    log_debug(&format!(
+        "PIPE: sending {} {} request ({} bytes)",
+        method,
+        path,
+        req.len()
+    ));
+    file.write_all(&req).map_err(|e| {
+        let err = format!("write error: {}", e);
+        log_debug(&format!("PIPE: write failed: {}", err));
+        err
+    })?;
 
     // Read response headers
     let mut buf = Vec::with_capacity(8192);
-    let header_end = crate::http::read_until_double_crlf(&mut file, &mut buf)?;
+    let header_end = crate::http::read_until_double_crlf(&mut file, &mut buf).map_err(|e| {
+        log_debug(&format!("PIPE: failed to read headers: {}", e));
+        e
+    })?;
     let (head, rest) = buf.split_at(header_end);
-    let head_str = std::str::from_utf8(head).map_err(|_| "invalid utf-8 in headers".to_string())?;
+    let head_str = std::str::from_utf8(head).map_err(|_| {
+        let err = "invalid utf-8 in headers".to_string();
+        log_debug(&format!("PIPE: {}", err));
+        err
+    })?;
     let mut lines = head_str.split("\r\n");
-    let status_line = lines.next().ok_or_else(|| "empty response".to_string())?;
-    let status = crate::http::parse_status_line(status_line)?;
+    let status_line = lines.next().ok_or_else(|| {
+        let err = "empty response".to_string();
+        log_debug(&format!("PIPE: {}", err));
+        err
+    })?;
+    let status = crate::http::parse_status_line(status_line).map_err(|e| {
+        log_debug(&format!(
+            "PIPE: failed to parse status line '{}': {}",
+            status_line, e
+        ));
+        e
+    })?;
     let header_str = lines.collect::<Vec<_>>().join("\r\n");
     let headers_vec = crate::http::parse_headers(&header_str);
 
+    log_debug(&format!("PIPE: received status {}", status));
+
     // Read the response body
-    let body = crate::http::read_http_body(&mut file, rest, &headers_vec)?;
+    let body = crate::http::read_http_body(&mut file, rest, &headers_vec).map_err(|e| {
+        log_debug(&format!("PIPE: failed to read response body: {}", e));
+        e
+    })?;
+
+    log_debug(&format!(
+        "PIPE: response complete, body size: {} bytes",
+        body.len()
+    ));
 
     Ok(Response {
         status,

@@ -113,7 +113,7 @@ fn log_warn(msg: &str) {
 fn log_info(msg: &str) {
     log_at(LogLevel::Info, msg);
 }
-fn log_debug(msg: &str) {
+pub fn log_debug(msg: &str) {
     log_at(LogLevel::Debug, msg);
 }
 
