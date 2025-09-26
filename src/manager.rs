@@ -12,6 +12,33 @@ use crate::config::GRACEFUL_SHUTDOWN_TIMEOUT_SECS;
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 use std::process::{Child, Command, Stdio};
+#[cfg(target_os = "linux")]
+const PR_SET_PDEATHSIG: libc::c_int = 1; // prctl option for parent death signal
+
+#[cfg(target_os = "linux")]
+const SYS_PRCTL: libc::c_int = 157; // x86_64 prctl syscall
+
+#[cfg(target_os = "linux")]
+unsafe fn prctl_syscall(
+    option: libc::c_int,
+    arg2: libc::c_ulong,
+    arg3: libc::c_ulong,
+    arg4: libc::c_ulong,
+    arg5: libc::c_ulong,
+) -> libc::c_int {
+    // SAFETY: syscall is unsafe but we're calling it correctly for prctl
+    unsafe {
+        libc::syscall(
+            SYS_PRCTL as libc::c_long,
+            option as libc::c_long,
+            arg2 as libc::c_long,
+            arg3 as libc::c_long,
+            arg4 as libc::c_long,
+            arg5 as libc::c_long,
+        ) as libc::c_int
+    }
+}
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -311,6 +338,11 @@ pub struct AgentManager {
 impl AgentManager {
     /// Creates a new manager with default `ProcessSpec`s based on constants.
     fn new() -> Self {
+        // Note: On Unix, child processes are placed in their own process groups using setsid().
+        // This provides good isolation, but if the parent application is killed forcefully (SIGKILL),
+        // the child processes may become orphaned. On Linux, PDEATHSIG prevents this.
+        // On other Unix systems, a background monitor detects reparenting to init and cleans up.
+
         use crate::config::is_agent_enabled;
 
         let agent_program = get_agent_program();
@@ -504,10 +536,24 @@ impl AgentManager {
             use std::os::unix::process::CommandExt;
             unsafe {
                 cmd.pre_exec(|| {
+                    // Create new session/process group for isolation and clean shutdown
                     // SAFETY: calling setsid in child just before exec
                     if libc::setsid() == -1 {
                         // If setsid fails, continue anyway; we just lose group control
                     }
+
+                    // On Linux, set up parent death signal so child dies if parent dies
+                    // This ensures no orphaned processes even when parent is killed forcefully
+                    // SAFETY: prctl syscall is called correctly here
+                    #[cfg(target_os = "linux")]
+                    if prctl_syscall(PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong, 0, 0, 0)
+                        == -1
+                    {
+                        // If setting PDEATHSIG fails, log but continue
+                        // Process groups will still provide some cleanup
+                        eprintln!("Warning: Failed to set parent death signal for child process");
+                    }
+
                     Ok(())
                 });
             }
@@ -734,6 +780,12 @@ impl AgentManager {
             let mut tb = lock_mutex(&self.trace_backoff_secs);
             let mut tn = lock_mutex(&self.trace_next_attempt);
             self.tick_process(&mut t, &self.trace_spec, &mut tb, &mut tn);
+        }
+
+        // Now that processes are started, fork the monitor process with their PIDs
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            self.fork_orphan_cleanup_monitor();
         }
 
         // Start monitor thread
@@ -1010,6 +1062,111 @@ impl AgentManager {
             }
             let mut t = lock_mutex(&self.trace_child);
             Self::graceful_kill(self.trace_spec.name, &mut t);
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn fork_orphan_cleanup_monitor(&self) {
+        // Get current child PIDs
+        let agent_pid = lock_mutex(&self.agent_child).as_ref().map(|c| c.id());
+        let trace_pid = lock_mutex(&self.trace_child).as_ref().map(|c| c.id());
+        let parent_pid = unsafe { libc::getpid() };
+
+        // Pass PIDs to monitor process via environment variables
+        // (since fork() copies memory but we want the monitor to know the PIDs)
+        unsafe {
+            if let Some(pid) = agent_pid {
+                let pid_str = std::ffi::CString::new(pid.to_string()).unwrap();
+                libc::setenv(
+                    std::ffi::CString::new("LIBAGENT_MONITOR_AGENT_PID")
+                        .unwrap()
+                        .as_ptr(),
+                    pid_str.as_ptr(),
+                    1,
+                );
+            }
+            if let Some(pid) = trace_pid {
+                let pid_str = std::ffi::CString::new(pid.to_string()).unwrap();
+                libc::setenv(
+                    std::ffi::CString::new("LIBAGENT_MONITOR_TRACE_PID")
+                        .unwrap()
+                        .as_ptr(),
+                    pid_str.as_ptr(),
+                    1,
+                );
+            }
+            let parent_pid_str = std::ffi::CString::new(parent_pid.to_string()).unwrap();
+            libc::setenv(
+                std::ffi::CString::new("LIBAGENT_MONITOR_PARENT_PID")
+                    .unwrap()
+                    .as_ptr(),
+                parent_pid_str.as_ptr(),
+                1,
+            );
+        }
+
+        // Fork a monitor process that will survive parent death
+        match unsafe { libc::fork() } {
+            -1 => {
+                // Fork failed
+                log_warn("Failed to fork orphan cleanup monitor process");
+            }
+            0 => {
+                // Child process (monitor) - read PIDs from environment
+                let agent_pid = std::env::var("LIBAGENT_MONITOR_AGENT_PID")
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok());
+                let trace_pid = std::env::var("LIBAGENT_MONITOR_TRACE_PID")
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok());
+                let parent_pid = std::env::var("LIBAGENT_MONITOR_PARENT_PID")
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(1); // fallback to init
+
+                self.run_orphan_monitor(parent_pid, agent_pid, trace_pid);
+                // Monitor process exits after cleanup
+                unsafe { libc::_exit(0) };
+            }
+            _ => {
+                // Parent process - monitor process is now running independently
+                log_debug("Forked orphan cleanup monitor process");
+            }
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn run_orphan_monitor(&self, parent_pid: u32, agent_pid: Option<u32>, trace_pid: Option<u32>) {
+        loop {
+            // Check if parent is still alive every 5 seconds
+            match unsafe { libc::kill(parent_pid as i32, 0) } {
+                0 => {
+                    // Parent is still alive, keep monitoring
+                    unsafe { libc::sleep(5) };
+                }
+                _ => {
+                    // Parent is dead, terminate our children
+                    log_debug("Parent process died, monitor process cleaning up children");
+
+                    if let Some(pid) = agent_pid {
+                        unsafe {
+                            libc::kill(pid as i32, libc::SIGTERM);
+                            libc::sleep(1); // Give it a moment
+                            libc::kill(pid as i32, libc::SIGKILL); // Force kill if needed
+                        }
+                    }
+
+                    if let Some(pid) = trace_pid {
+                        unsafe {
+                            libc::kill(pid as i32, libc::SIGTERM);
+                            libc::sleep(1); // Give it a moment
+                            libc::kill(pid as i32, libc::SIGKILL); // Force kill if needed
+                        }
+                    }
+
+                    break;
+                }
+            }
         }
     }
 }

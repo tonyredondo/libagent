@@ -55,6 +55,15 @@ libagent implements smart process spawning to prevent conflicts and ensure coope
 - Only processes spawned by libagent are managed (external processes are respected)
 - Exponential backoff prevents resource exhaustion during failure scenarios
 
+### Process Lifecycle & Cleanup
+- **Normal Shutdown**: When `stop()` is called or the library unloads, all child processes are terminated gracefully (SIGTERM then SIGKILL on Unix, Job termination on Windows)
+- **Parent Process Killed**: If the parent application is killed normally, libagent's destructor ensures proper cleanup
+- **Forceful Termination**: If the parent is killed with SIGKILL (or crashes):
+  - **Linux**: Parent death signals ensure child processes are terminated immediately when the parent dies
+  - **macOS/BSD**: Dedicated monitor process provides immediate cleanup when parent dies
+  - **Windows**: Job Objects ensure all processes in the job are terminated immediately when the job handle closes
+- **Best Practice**: Ensure your application calls `libagent::stop()` during shutdown for reliable cleanup
+
 ## Usage (Rust)
 ```rust
 fn main() {

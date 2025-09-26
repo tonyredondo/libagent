@@ -335,6 +335,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_get_monitor_interval_secs_default() {
         // Clean up any environment variables from previous tests
         unsafe {

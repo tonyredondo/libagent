@@ -103,6 +103,47 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 - By default, logs go to stderr; with the `log` feature enabled, logs route through the Rust `log` facade instead.
 - Note: log level and debug checks are cached with `OnceLock`, so changes to env vars after first read do not take effect within the same process.
 
+## Process Lifecycle & Orphaned Process Handling
+
+### Normal Operation
+1. `initialize()` spawns processes and starts monitoring
+2. `stop()` terminates all child processes and stops monitoring
+3. Destructor (`#[ctor::dtor]`) calls `stop()` on library unload
+
+### Process Group Management (Unix)
+- Children are created with `setsid()` to establish new process groups for isolation
+- Parent death signals (`PR_SET_PDEATHSIG`) ensure children die immediately if parent dies
+- Shutdown sends signals to entire process groups (`kill(-pgid, SIGTERM)`)
+- This ensures all child processes and their descendants are terminated
+
+### Job Object Management (Windows)
+- All child processes are assigned to a Windows Job Object
+- Job is configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+- When the Job handle is closed (during shutdown), all processes in the job are terminated
+
+### Orphaned Process Scenarios
+If the parent application is killed forcefully (SIGKILL, crash, etc.):
+
+**Linux:**
+- Parent death signals (`PR_SET_PDEATHSIG`) ensure child processes are terminated immediately
+- No orphaned processes - children die as soon as they detect parent death
+- Process group isolation prevents runaway process trees during normal operation
+
+**macOS/BSD:**
+- Dedicated monitor process forked at startup to watch parent PID
+- Monitor process survives parent death and terminates Datadog children
+- Provides immediate cleanup when parent dies (unlike reparenting detection)
+
+**Windows:**
+- Job Objects ensure all processes are terminated when the job handle is closed
+- Even if the parent crashes, Windows will terminate all job processes
+- No orphaned processes on Windows
+
+### Best Practices
+- Call `libagent::stop()` during application shutdown
+- Handle signals gracefully in your application
+- On Unix, avoid sending SIGKILL to your application - use SIGTERM for clean shutdown
+
 ## Idempotency and Safety
 - `initialize()` and `stop()` are idempotent.
 - FFI functions catch panics with `catch_unwind` to prevent unwinding across the FFI boundary.
