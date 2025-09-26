@@ -45,10 +45,10 @@ libagent implements smart process spawning to prevent conflicts and ensure coope
 - **Configuration**: IPC-only mode (TCP disabled, custom socket/pipe path)
 
 ### Agent Spawning
-- **Spawns when**: Agent program is configured AND (remote config check is disabled OR no existing agent provides remote configuration on `localhost:5001`)
-- **Skips when**: Agent program is not configured (empty string) OR (remote config check is enabled AND existing agent provides remote config service)
+- **Spawns when**: `LIBAGENT_AGENT_ENABLED=true` AND no existing agent provides remote configuration on `localhost:5001`
+- **Skips when**: `LIBAGENT_AGENT_ENABLED=false` (default) OR (agent is enabled AND existing agent provides remote config service)
 - **Purpose**: Support custom trace-agents by default; allow traditional Datadog agent cooperation when explicitly enabled
-- **Configuration**: Set `LIBAGENT_AGENT_PROGRAM=""` to disable agent spawning; set `LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK=true` for traditional behavior
+- **Configuration**: Set `LIBAGENT_AGENT_ENABLED=true` to enable the main Datadog agent (disabled by default for custom trace-agents)
 
 ### Monitoring & Recovery
 - Both processes are continuously monitored and automatically restarted on failure

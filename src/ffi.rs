@@ -17,10 +17,14 @@ use crate::winpipe;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Type alias for validated proxy arguments to reduce type complexity.
 type ValidatedProxyArgs = (String, String, Vec<(String, String)>, Vec<u8>);
+
+/// Global request ID counter for tracking concurrent requests in debug logs
+static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Initialize the library: start the Agent and Trace Agent and begin monitoring.
 ///
@@ -128,6 +132,7 @@ fn validate_proxy_args(
 
 /// Perform the actual proxy request based on platform (callback version).
 fn perform_proxy_request_new(
+    request_id: u64,
     method: &str,
     path: &str,
     headers: Vec<(String, String)>,
@@ -142,7 +147,7 @@ fn perform_proxy_request_new(
     #[cfg(unix)]
     {
         let uds_path = get_trace_agent_uds_path();
-        uds::request_over_uds(&uds_path, method, path, headers, body, timeout)
+        uds::request_over_uds(request_id, &uds_path, method, path, headers, body, timeout)
     }
     #[cfg(windows)]
     {
@@ -150,7 +155,9 @@ fn perform_proxy_request_new(
         if pipe_name.trim().is_empty() {
             return Err("LIBAGENT_TRACE_AGENT_PIPE not set".to_string());
         }
-        winpipe::request_over_named_pipe(&pipe_name, method, path, headers, body, timeout)
+        winpipe::request_over_named_pipe(
+            request_id, &pipe_name, method, path, headers, body, timeout,
+        )
     }
     #[cfg(all(not(unix), not(windows)))]
     {
@@ -185,7 +192,9 @@ pub extern "C" fn ProxyTraceAgent(
     on_error: *const ::std::os::raw::c_void, // Actually ErrorCallback, but made void* for C compatibility
     user_data: *mut ::std::os::raw::c_void,
 ) -> i32 {
-    log_debug("FFI call: ProxyTraceAgent()");
+    // Generate unique request ID for tracking concurrent requests
+    let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    log_debug(&format!("FFI call: ProxyTraceAgent() [req:{}]", request_id));
     catch_unwind(AssertUnwindSafe(|| {
         // validate and extract arguments
         let (method, path, headers, body) =
@@ -222,25 +231,26 @@ pub extern "C" fn ProxyTraceAgent(
             path,
             body.len()
         ));
-        let resp = match perform_proxy_request_new(&method, &path, headers, &body, timeout) {
-            Ok(resp) => {
-                log_debug(&format!(
-                    "FFI ProxyTraceAgent: received response with status={}",
-                    resp.status
-                ));
-                resp
-            }
-            Err(err_msg) => {
-                log_debug(&format!("FFI ProxyTraceAgent: request failed: {}", err_msg));
-                if !on_error.is_null() {
-                    let on_error_fn: ErrorCallback = unsafe { std::mem::transmute(on_error) };
-                    let c_err =
-                        CString::new(err_msg).unwrap_or_else(|_| CString::new("error").unwrap());
-                    on_error_fn(c_err.as_ptr(), user_data);
+        let resp =
+            match perform_proxy_request_new(request_id, &method, &path, headers, &body, timeout) {
+                Ok(resp) => {
+                    log_debug(&format!(
+                        "FFI ProxyTraceAgent: received response with status={}",
+                        resp.status
+                    ));
+                    resp
                 }
-                return -2;
-            }
-        };
+                Err(err_msg) => {
+                    log_debug(&format!("FFI ProxyTraceAgent: request failed: {}", err_msg));
+                    if !on_error.is_null() {
+                        let on_error_fn: ErrorCallback = unsafe { std::mem::transmute(on_error) };
+                        let c_err = CString::new(err_msg)
+                            .unwrap_or_else(|_| CString::new("error").unwrap());
+                        on_error_fn(c_err.as_ptr(), user_data);
+                    }
+                    return -2;
+                }
+            };
 
         // call the response callback
         if !on_response.is_null() {

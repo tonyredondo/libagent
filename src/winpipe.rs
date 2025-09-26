@@ -17,6 +17,7 @@ pub use crate::http::Response;
 
 /// Work item for the worker pool
 struct WorkItem {
+    request_id: u64,
     pipe_name: String,
     method: String,
     path: String,
@@ -62,6 +63,7 @@ impl WorkerPool {
             };
 
             let result = perform_request(
+                work_item.request_id,
                 &work_item.pipe_name,
                 &work_item.method,
                 &work_item.path,
@@ -144,6 +146,7 @@ fn build_request(
 }
 
 pub fn request_over_named_pipe(
+    request_id: u64,
     pipe_name: &str,
     method: &str,
     path: &str,
@@ -163,6 +166,7 @@ pub fn request_over_named_pipe(
 
     // Create work item
     let work_item = WorkItem {
+        request_id,
         pipe_name: full_path,
         method: method.to_string(),
         path: path.to_string(),
@@ -176,25 +180,28 @@ pub fn request_over_named_pipe(
 
     // Submit work to the worker pool
     log_debug(&format!(
-        "PIPE: submitting {} {} request to worker pool",
-        method, path
+        "PIPE [req:{}]: submitting {} {} request to worker pool",
+        request_id, method, path
     ));
     submit_work_to_pool(work_item)?;
 
     // Wait for the result with timeout
     match result_rx.recv_timeout(timeout) {
         Ok(result) => {
-            log_debug("PIPE: received result from worker pool");
+            log_debug(&format!(
+                "PIPE [req:{}]: received result from worker pool",
+                request_id
+            ));
             result
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
             let err = format!("request timed out after {:?}", timeout);
-            log_debug(&format!("PIPE: {}", err));
+            log_debug(&format!("PIPE [req:{}]: {}", request_id, err));
             Err(err)
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             let err = "worker thread disconnected unexpectedly".to_string();
-            log_debug(&format!("PIPE: {}", err));
+            log_debug(&format!("PIPE [req:{}]: {}", request_id, err));
             Err(err)
         }
     }
@@ -202,75 +209,195 @@ pub fn request_over_named_pipe(
 
 #[allow(dead_code)]
 fn perform_request(
+    request_id: u64,
     full_path: &str,
     method: &str,
     path: &str,
     headers: Vec<(String, String)>,
     body: &[u8],
 ) -> Result<Response, String> {
-    log_debug(&format!("PIPE: opening pipe: {}", full_path));
+    log_debug(&format!(
+        "PIPE [req:{}]: opening pipe: {}",
+        request_id, full_path
+    ));
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(full_path)
         .map_err(|e| {
             let err = format!("failed to open pipe {}: {}", full_path, e);
-            log_debug(&format!("PIPE: open failed: {}", err));
+            log_debug(&format!("PIPE [req:{}]: open failed: {}", request_id, err));
             err
         })?;
 
     // Write request
     let req = build_request(method, path, headers, body);
     log_debug(&format!(
-        "PIPE: sending {} {} request ({} bytes)",
+        "PIPE [req:{}]: sending {} {} request ({} bytes total, body: {} bytes)",
+        request_id,
         method,
         path,
-        req.len()
+        req.len(),
+        body.len()
     ));
-    file.write_all(&req).map_err(|e| {
+
+    // Log request details for debugging (text only, avoid binary formats like MessagePack)
+    if let Ok(req_str) = std::str::from_utf8(&req) {
+        log_debug(&format!(
+            "PIPE [req:{}]: request content:\n{}",
+            request_id, req_str
+        ));
+    } else {
+        log_debug(&format!(
+            "PIPE [req:{}]: request contains binary data ({} bytes)",
+            request_id,
+            req.len()
+        ));
+    }
+
+    // Write the request and track progress
+    log_debug(&format!(
+        "PIPE [req:{}]: starting request write",
+        request_id
+    ));
+    let write_result = file.write_all(&req);
+    match &write_result {
+        Ok(_) => log_debug(&format!(
+            "PIPE [req:{}]: request write completed successfully",
+            request_id
+        )),
+        Err(e) => log_debug(&format!(
+            "PIPE [req:{}]: request write failed: {}",
+            request_id, e
+        )),
+    }
+    write_result.map_err(|e| {
         let err = format!("write error: {}", e);
-        log_debug(&format!("PIPE: write failed: {}", err));
+        log_debug(&format!(
+            "PIPE [req:{}]: write operation failed: {}",
+            request_id, err
+        ));
         err
     })?;
 
     // Read response headers
+    log_debug(&format!(
+        "PIPE [req:{}]: starting to read response headers",
+        request_id
+    ));
+
     let mut buf = Vec::with_capacity(8192);
     let header_end = crate::http::read_until_double_crlf(&mut file, &mut buf).map_err(|e| {
-        log_debug(&format!("PIPE: failed to read headers: {}", e));
+        log_debug(&format!(
+            "PIPE [req:{}]: failed to read headers after successful write: {}",
+            request_id, e
+        ));
+
+        // Check if this indicates the server closed the connection
+        if e.contains("The pipe has been ended") || e.contains("Broken pipe") || e.contains("broken pipe") {
+            log_debug(&format!(
+                "PIPE [req:{}]: server closed pipe immediately after receiving request (no response sent)",
+                request_id
+            ));
+            log_debug(&format!(
+                "PIPE [req:{}]: this typically means the endpoint '{}' is not supported by the trace agent",
+                request_id, path
+            ));
+        }
+
         e
     })?;
+    log_debug(&format!(
+        "PIPE [req:{}]: read {} bytes of headers, header_end at {}",
+        request_id,
+        buf.len(),
+        header_end
+    ));
+
     let (head, rest) = buf.split_at(header_end);
+    log_debug(&format!(
+        "PIPE [req:{}]: header section is {} bytes, remaining data: {} bytes",
+        request_id,
+        head.len(),
+        rest.len()
+    ));
+
     let head_str = std::str::from_utf8(head).map_err(|_| {
         let err = "invalid utf-8 in headers".to_string();
-        log_debug(&format!("PIPE: {}", err));
+        log_debug(&format!("PIPE [req:{}]: {}", request_id, err));
         err
     })?;
+    log_debug(&format!(
+        "PIPE [req:{}]: header content:\n{}",
+        request_id, head_str
+    ));
+
     let mut lines = head_str.split("\r\n");
     let status_line = lines.next().ok_or_else(|| {
         let err = "empty response".to_string();
-        log_debug(&format!("PIPE: {}", err));
+        log_debug(&format!("PIPE [req:{}]: {}", request_id, err));
         err
     })?;
+    log_debug(&format!(
+        "PIPE [req:{}]: status line: '{}'",
+        request_id, status_line
+    ));
+
     let status = crate::http::parse_status_line(status_line).map_err(|e| {
         log_debug(&format!(
-            "PIPE: failed to parse status line '{}': {}",
-            status_line, e
+            "PIPE [req:{}]: failed to parse status line '{}': {}",
+            request_id, status_line, e
         ));
         e
     })?;
+    log_debug(&format!(
+        "PIPE [req:{}]: parsed status: {}",
+        request_id, status
+    ));
+
     let header_str = lines.collect::<Vec<_>>().join("\r\n");
     let headers_vec = crate::http::parse_headers(&header_str);
-
-    log_debug(&format!("PIPE: received status {}", status));
+    log_debug(&format!(
+        "PIPE [req:{}]: parsed {} headers",
+        request_id,
+        headers_vec.len()
+    ));
 
     // Read the response body
+    log_debug(&format!(
+        "PIPE [req:{}]: starting to read response body",
+        request_id
+    ));
     let body = crate::http::read_http_body(&mut file, rest, &headers_vec).map_err(|e| {
-        log_debug(&format!("PIPE: failed to read response body: {}", e));
+        log_debug(&format!(
+            "PIPE [req:{}]: failed to read response body: {}",
+            request_id, e
+        ));
         e
     })?;
+    log_debug(&format!(
+        "PIPE [req:{}]: read response body of {} bytes",
+        request_id,
+        body.len()
+    ));
+
+    // Log response details for debugging (text only, avoid binary formats like MessagePack)
+    if let Ok(body_str) = std::str::from_utf8(&body) {
+        log_debug(&format!(
+            "PIPE [req:{}]: response body content:\n{}",
+            request_id, body_str
+        ));
+    } else {
+        log_debug(&format!(
+            "PIPE [req:{}]: response body contains binary data ({} bytes)",
+            request_id,
+            body.len()
+        ));
+    }
 
     log_debug(&format!(
-        "PIPE: response complete, body size: {} bytes",
+        "PIPE [req:{}]: response complete, body size: {} bytes",
+        request_id,
         body.len()
     ));
 

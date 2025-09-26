@@ -418,6 +418,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[serial]
     fn test_get_trace_agent_pipe_name_default() {
         // Clean up any environment variables from previous tests
         unsafe {
