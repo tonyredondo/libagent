@@ -26,18 +26,6 @@ jobs:
             platform: linux
             arch: arm64
 
-          # Linux x64 (musl - Alpine compatible)
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            platform: alpine
-            arch: x64
-
-          # Linux arm64 (musl - Alpine compatible)
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            platform: alpine
-            arch: arm64
-
           # macOS arm64
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -80,12 +68,11 @@ jobs:
           mkdir -p artifacts
 
           # Copy the dynamic library (different extensions per platform)
-          # Note: musl targets don't support cdylib, only rlib
           if [[ "${{ matrix.target }}" == *"windows"* ]]; then
             cp target/${{ matrix.target }}/release/libagent.dll artifacts/ 2>/dev/null || true
           elif [[ "${{ matrix.target }}" == *"darwin"* ]]; then
             cp target/${{ matrix.target }}/release/liblibagent.dylib artifacts/ 2>/dev/null || true
-          elif [[ "${{ matrix.target }}" != *"musl"* ]]; then
+          else
             cp target/${{ matrix.target }}/release/liblibagent.so artifacts/ 2>/dev/null || true
           fi
 

@@ -210,7 +210,6 @@ Note: On Rust 2024 nightly, environment mutations in tests (e.g., `std::env::set
 ## Releases
 Automated builds are created for the following platforms on every commit:
 - **Linux x64/arm64 (glibc)**: Standard Linux distributions
-- **Linux x64/arm64 (musl)**: Alpine Linux compatible
 - **macOS arm64**: Apple Silicon
 - **Windows x64**: MSVC
 
