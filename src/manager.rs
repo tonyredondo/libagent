@@ -85,14 +85,35 @@ fn current_log_level() -> LogLevel {
     })
 }
 
+fn format_timestamp() -> String {
+    chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
+}
+
+fn format_log_level(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Error => "ERROR",
+        LogLevel::Warn => "WARN",
+        LogLevel::Info => "INFO",
+        LogLevel::Debug => "DEBUG",
+    }
+}
+
 #[cfg(feature = "log")]
 fn log_at(level: LogLevel, msg: &str) {
     // Defer filtering to the `log` facade; emit at mapped level
+    let timestamped_msg = format!(
+        "{} [libagent] [{}] {}",
+        format_timestamp(),
+        format_log_level(level),
+        msg
+    );
     match level {
-        LogLevel::Error => log::error!(target: "libagent", "{}", msg),
-        LogLevel::Warn => log::warn!(target: "libagent", "{}", msg),
-        LogLevel::Info => log::info!(target: "libagent", "{}", msg),
-        LogLevel::Debug => log::debug!(target: "libagent", "{}", msg),
+        LogLevel::Error => log::error!(target: "libagent", "{}", timestamped_msg),
+        LogLevel::Warn => log::warn!(target: "libagent", "{}", timestamped_msg),
+        LogLevel::Info => log::info!(target: "libagent", "{}", timestamped_msg),
+        LogLevel::Debug => log::debug!(target: "libagent", "{}", timestamped_msg),
     }
 }
 
@@ -100,7 +121,12 @@ fn log_at(level: LogLevel, msg: &str) {
 fn log_at(level: LogLevel, msg: &str) {
     if current_log_level() >= level {
         // Route all logs to stderr to avoid polluting host stdout
-        eprintln!("[libagent] {}", msg);
+        eprintln!(
+            "{} [libagent] [{}] {}",
+            format_timestamp(),
+            format_log_level(level),
+            msg
+        );
     }
 }
 
@@ -276,6 +302,8 @@ pub struct AgentManager {
     /// Backoff state for trace-agent respawns
     trace_backoff_secs: Mutex<u64>,
     trace_next_attempt: Mutex<Option<Instant>>,
+    /// Whether we've verified the current trace-agent is ready to accept connections
+    trace_agent_ready: Mutex<bool>,
     #[cfg(windows)]
     windows_job: Mutex<Option<isize>>, // Job handle stored as isize for Send/Sync
 }
@@ -314,8 +342,120 @@ impl AgentManager {
             agent_next_attempt: Mutex::new(None),
             trace_backoff_secs: Mutex::new(get_backoff_initial_secs()),
             trace_next_attempt: Mutex::new(None),
+            trace_agent_ready: Mutex::new(false),
             #[cfg(windows)]
             windows_job: Mutex::new(None),
+        }
+    }
+
+    /// Wait for the trace-agent to be ready to accept connections.
+    /// Returns true if the trace-agent is ready, false if timeout exceeded.
+    fn wait_for_trace_agent_ready(&self, timeout: Duration) -> bool {
+        #[cfg(unix)]
+        {
+            use crate::config::get_trace_agent_uds_path;
+            let uds_path = get_trace_agent_uds_path();
+
+            log_debug("Manager: waiting for trace-agent UDS socket to be ready");
+            let start_time = std::time::Instant::now();
+
+            while start_time.elapsed() < timeout {
+                use std::os::unix::net::UnixStream;
+
+                // Try to connect to the socket
+                if UnixStream::connect(&uds_path).is_ok() {
+                    log_debug("Manager: trace-agent UDS socket is ready");
+                    return true;
+                }
+
+                // Wait a bit before retrying
+                std::thread::sleep(Duration::from_millis(100));
+            }
+
+            log_debug("Manager: timeout waiting for trace-agent UDS socket");
+            false
+        }
+        #[cfg(windows)]
+        {
+            use crate::config::get_trace_agent_pipe_name;
+            let pipe_name = get_trace_agent_pipe_name();
+            if pipe_name.trim().is_empty() {
+                log_debug("Manager: LIBAGENT_TRACE_AGENT_PIPE not set, cannot wait for readiness");
+                return false;
+            }
+
+            log_debug("Manager: waiting for trace-agent named pipe to be ready");
+            let start_time = std::time::Instant::now();
+
+            while start_time.elapsed() < timeout {
+                // Try to open the pipe
+                if std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(format!(r"\\.\pipe\{}", pipe_name))
+                    .is_ok()
+                {
+                    log_debug("Manager: trace-agent named pipe is ready");
+                    return true;
+                }
+
+                // Wait a bit before retrying
+                std::thread::sleep(Duration::from_millis(100));
+            }
+
+            log_debug("Manager: timeout waiting for trace-agent named pipe");
+            false
+        }
+        #[cfg(all(not(unix), not(windows)))]
+        {
+            // For unsupported platforms, assume ready
+            true
+        }
+    }
+
+    /// Ensure the trace-agent is ready to accept connections.
+    /// This will block on the first call after a trace-agent spawn.
+    pub fn ensure_trace_agent_ready(&self) -> Result<(), String> {
+        // Check if a trace-agent was actually spawned by libagent
+        // If not (like in tests that use mock servers), skip readiness check
+        let trace_child_none = lock_mutex(&self.trace_child).is_none();
+        log_debug(&format!(
+            "FFI: ensure_trace_agent_ready called, trace_child is_none={}",
+            trace_child_none
+        ));
+        if trace_child_none {
+            log_debug("FFI: no trace-agent spawned by libagent, skipping readiness check");
+            return Ok(());
+        }
+
+        let mut ready = lock_mutex(&self.trace_agent_ready);
+        if *ready {
+            // Already verified ready, skip check
+            return Ok(());
+        }
+
+        log_debug("FFI: waiting for trace-agent to be ready before first proxy call");
+        // Use a shorter timeout for tests and development
+        let timeout = if cfg!(debug_assertions) {
+            Duration::from_millis(500)
+        } else {
+            Duration::from_secs(10)
+        };
+
+        if self.wait_for_trace_agent_ready(timeout) {
+            *ready = true;
+            log_debug("FFI: trace-agent is ready, proceeding with proxy call");
+            Ok(())
+        } else {
+            log_debug("FFI: trace-agent readiness check timed out, proceeding anyway");
+            // In debug/test builds, don't fail on timeout - allow the request to proceed
+            // This helps with tests and development where trace-agent might not be fully ready
+            if cfg!(debug_assertions) {
+                *ready = true; // Mark as ready to avoid repeated checks
+                Ok(())
+            } else {
+                Err("trace-agent not ready to accept connections within timeout".to_string())
+            }
         }
     }
 
@@ -394,6 +534,12 @@ impl AgentManager {
             spec.program,
             child.id()
         ));
+
+        // For trace-agent, reset the readiness flag since we spawned a new instance
+        if spec.name == "trace-agent" {
+            *lock_mutex(&self.trace_agent_ready) = false;
+        }
+
         Ok(child)
     }
 
@@ -873,7 +1019,7 @@ impl AgentManager {
 /// Global singleton manager used by both Rust and FFI front-ends.
 static GLOBAL_MANAGER: OnceLock<Arc<AgentManager>> = OnceLock::new();
 
-fn get_manager() -> &'static Arc<AgentManager> {
+pub fn get_manager() -> &'static Arc<AgentManager> {
     GLOBAL_MANAGER.get_or_init(|| Arc::new(AgentManager::new()))
 }
 

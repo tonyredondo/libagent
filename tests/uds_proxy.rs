@@ -110,30 +110,36 @@ fn uds_proxy_basic() {
         }
     };
     let handle = thread::spawn(move || {
-        if let Ok((mut stream, _addr)) = listener.accept() {
+        // Handle connections until we get one valid HTTP request
+        while let Ok((mut stream, _addr)) = listener.accept() {
             // Read until headers end
             let mut buf = [0u8; 8192];
             let mut read_total = 0usize;
+            let mut got_complete_request = false;
             loop {
                 let n = stream.read(&mut buf[read_total..]).unwrap();
                 if n == 0 {
-                    break;
+                    break; // Connection closed by client
                 }
                 read_total += n;
                 if read_total >= 4 && buf[..read_total].windows(4).any(|w| w == b"\r\n\r\n") {
+                    got_complete_request = true;
                     break;
                 }
                 if read_total == buf.len() {
                     break;
                 }
             }
-            // Respond
-            write_response(
-                &mut stream,
-                "201 Created",
-                &[("Content-Type", "text/plain"), ("X-Server", "uds-test")],
-                b"response",
-            );
+            // Only respond if we got a complete HTTP request, then exit
+            if got_complete_request {
+                write_response(
+                    &mut stream,
+                    "201 Created",
+                    &[("Content-Type", "text/plain"), ("X-Server", "uds-test")],
+                    b"response",
+                );
+                break; // Exit after handling one valid request
+            }
         }
     });
 

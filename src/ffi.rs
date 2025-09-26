@@ -97,12 +97,21 @@ fn validate_proxy_args(
             Err(e) => return Err(e),
         }
     };
-    let path = unsafe {
+    let mut path = unsafe {
         match cstr_arg(path, "path") {
             Ok(s) => s.to_string(),
             Err(e) => return Err(e),
         }
     };
+
+    // Ensure path starts with '/' for valid HTTP request
+    if !path.starts_with('/') {
+        path.insert(0, '/');
+        log_debug(&format!(
+            "FFI ProxyTraceAgent: prepended '/' to path: '{}'",
+            path
+        ));
+    }
     let headers_str = unsafe { cstr_arg(headers, "headers")? };
 
     let hdrs = uds::parse_header_lines(headers_str);
@@ -125,6 +134,11 @@ fn perform_proxy_request_new(
     body: &[u8],
     timeout: Duration,
 ) -> Result<crate::http::Response, String> {
+    // Ensure trace-agent is ready before making the first proxy call
+    if let Err(e) = manager::get_manager().ensure_trace_agent_ready() {
+        log_debug(&format!("FFI ProxyTraceAgent: {}", e));
+        return Err(e);
+    }
     #[cfg(unix)]
     {
         let uds_path = get_trace_agent_uds_path();
@@ -474,6 +488,28 @@ mod tests {
         assert_eq!(method_str, "GET");
         assert_eq!(path_str, "/test");
         assert!(body_vec.is_empty());
+    }
+
+    #[test]
+    fn test_validate_proxy_args_path_normalization() {
+        use std::ffi::CString;
+
+        let method = CString::new("POST").unwrap();
+        let path = CString::new("v0.7/traces").unwrap(); // path without leading slash
+        let headers = CString::new("Content-Type: application/json").unwrap();
+
+        let result = validate_proxy_args(
+            method.as_ptr(),
+            path.as_ptr(),
+            headers.as_ptr(),
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(result.is_ok());
+        let (method_str, path_str, _headers_vec, _body_vec) = result.unwrap();
+        assert_eq!(method_str, "POST");
+        assert_eq!(path_str, "/v0.7/traces"); // should have leading slash prepended
     }
 
     #[test]

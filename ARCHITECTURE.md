@@ -96,6 +96,9 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 - Example: `LIBAGENT_AGENT_ARGS='-c "quoted arg"'`
 
 ## Logging
+- **Format**: `2025-09-26T14:44:51.408Z [libagent] [LEVEL] message`
+- **Timestamps**: ISO 8601 format with millisecond precision (UTC)
+- **Levels**: `[ERROR]`, `[WARN]`, `[INFO]`, `[DEBUG]`
 - Library log level: `LIBAGENT_LOG` set to `error|warn|info|debug`. `LIBAGENT_DEBUG=1` also forces debug level and inherits child stdout/stderr.
 - By default, logs go to stderr; with the `log` feature enabled, logs route through the Rust `log` facade instead.
 - Note: log level and debug checks are cached with `OnceLock`, so changes to env vars after first read do not take effect within the same process.

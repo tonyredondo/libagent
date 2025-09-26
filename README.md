@@ -159,6 +159,9 @@ cargo +nightly test -- --nocapture
 ```
 
 ## Logging
+- **Format**: `2025-09-26T14:44:51.408Z [libagent] [LEVEL] message`
+- **Timestamps**: ISO 8601 format with millisecond precision (UTC)
+- **Levels**: `[ERROR]`, `[WARN]`, `[INFO]`, `[DEBUG]`
 - Default: the library writes its own logs to stderr. Child process stdout/stderr are inherited when `LIBAGENT_DEBUG=1` or when `LIBAGENT_LOG=debug`.
 - `LIBAGENT_DEBUG=1` also sets the internal log level to `debug`.
 - Optional log facade: enable the `log` feature to route logs through the Rust `log` crate.
