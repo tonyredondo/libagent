@@ -16,6 +16,7 @@ fn respawns_on_exit_with_backoff() {
     let sleeper = common::unix::create_stub_sleep(dir);
 
     unsafe {
+        env::set_var("LIBAGENT_AGENT_ENABLED", "true");
         env::set_var("LIBAGENT_AGENT_PROGRAM", &script);
         env::set_var("LIBAGENT_TRACE_AGENT_PROGRAM", &sleeper.script);
         env::set_var("LIBAGENT_AGENT_ARGS", "");

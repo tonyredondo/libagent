@@ -56,10 +56,10 @@ const MAX_SHUTDOWN_TIMEOUT_SECS: u64 = 300; // 5 minutes
 /// Environment variable names used for runtime overrides.
 const ENV_AGENT_PROGRAM: &str = "LIBAGENT_AGENT_PROGRAM";
 const ENV_AGENT_ARGS: &str = "LIBAGENT_AGENT_ARGS";
+const ENV_AGENT_ENABLED: &str = "LIBAGENT_AGENT_ENABLED";
 const ENV_TRACE_AGENT_PROGRAM: &str = "LIBAGENT_TRACE_AGENT_PROGRAM";
 const ENV_TRACE_AGENT_ARGS: &str = "LIBAGENT_TRACE_AGENT_ARGS";
 const ENV_MONITOR_INTERVAL_SECS: &str = "LIBAGENT_MONITOR_INTERVAL_SECS";
-const ENV_ENABLE_REMOTE_CONFIG_CHECK: &str = "LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK";
 #[cfg(unix)]
 const ENV_TRACE_AGENT_UDS: &str = "LIBAGENT_TRACE_AGENT_UDS";
 #[cfg(windows)]
@@ -189,12 +189,11 @@ pub fn get_graceful_shutdown_timeout_secs() -> u64 {
     GRACEFUL_SHUTDOWN_TIMEOUT_SECS // This is a compile-time constant, no runtime override needed
 }
 
-/// Returns true if remote config check should be enabled.
-/// When enabled, agent spawning will check for existing remote config service on port 5001.
-/// When disabled (default), agent spawning will not perform this check, allowing custom trace-agents.
-/// This is useful when running a custom trace-agent that doesn't provide remote config.
-pub fn is_remote_config_check_enabled() -> bool {
-    std::env::var(ENV_ENABLE_REMOTE_CONFIG_CHECK)
+/// Returns true if the main Datadog agent should be enabled.
+/// When enabled, the agent will be spawned if configured.
+/// When disabled (default), only the trace-agent will run, suitable for custom trace-agent implementations.
+pub fn is_agent_enabled() -> bool {
+    std::env::var(ENV_AGENT_ENABLED)
         .map(|val| {
             let normalized = val.trim().to_ascii_lowercase();
             matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
@@ -551,60 +550,60 @@ mod tests {
     }
 
     #[test]
-    fn test_is_remote_config_check_enabled_default() {
+    fn test_is_agent_enabled_default() {
         // Clean up any environment variables from previous tests
         unsafe {
-            std::env::remove_var(ENV_ENABLE_REMOTE_CONFIG_CHECK);
+            std::env::remove_var(ENV_AGENT_ENABLED);
         }
         // Test default value - should be false (disabled by default)
-        assert!(!is_remote_config_check_enabled());
+        assert!(!is_agent_enabled());
     }
 
     #[test]
     #[serial]
-    fn test_is_remote_config_check_enabled_true() {
+    fn test_is_agent_enabled_true() {
         unsafe {
-            std::env::set_var(ENV_ENABLE_REMOTE_CONFIG_CHECK, "true");
+            std::env::set_var(ENV_AGENT_ENABLED, "true");
         }
-        assert!(is_remote_config_check_enabled());
+        assert!(is_agent_enabled());
         unsafe {
-            std::env::remove_var(ENV_ENABLE_REMOTE_CONFIG_CHECK);
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_is_remote_config_check_enabled_1() {
-        unsafe {
-            std::env::set_var(ENV_ENABLE_REMOTE_CONFIG_CHECK, "1");
-        }
-        assert!(is_remote_config_check_enabled());
-        unsafe {
-            std::env::remove_var(ENV_ENABLE_REMOTE_CONFIG_CHECK);
+            std::env::remove_var(ENV_AGENT_ENABLED);
         }
     }
 
     #[test]
     #[serial]
-    fn test_is_remote_config_check_enabled_yes() {
+    fn test_is_agent_enabled_1() {
         unsafe {
-            std::env::set_var(ENV_ENABLE_REMOTE_CONFIG_CHECK, "yes");
+            std::env::set_var(ENV_AGENT_ENABLED, "1");
         }
-        assert!(is_remote_config_check_enabled());
+        assert!(is_agent_enabled());
         unsafe {
-            std::env::remove_var(ENV_ENABLE_REMOTE_CONFIG_CHECK);
+            std::env::remove_var(ENV_AGENT_ENABLED);
         }
     }
 
     #[test]
     #[serial]
-    fn test_is_remote_config_check_enabled_false() {
+    fn test_is_agent_enabled_yes() {
         unsafe {
-            std::env::set_var(ENV_ENABLE_REMOTE_CONFIG_CHECK, "false");
+            std::env::set_var(ENV_AGENT_ENABLED, "yes");
         }
-        assert!(!is_remote_config_check_enabled());
+        assert!(is_agent_enabled());
         unsafe {
-            std::env::remove_var(ENV_ENABLE_REMOTE_CONFIG_CHECK);
+            std::env::remove_var(ENV_AGENT_ENABLED);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_is_agent_enabled_false() {
+        unsafe {
+            std::env::set_var(ENV_AGENT_ENABLED, "false");
+        }
+        assert!(!is_agent_enabled());
+        unsafe {
+            std::env::remove_var(ENV_AGENT_ENABLED);
         }
     }
 }

@@ -84,12 +84,12 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
   - Monitor interval: 1s.
 - Smart spawning logic:
   - Trace-agent: Only spawns if IPC socket/pipe is available (prevents conflicts)
-  - Agent: Only spawns if agent program is configured AND (remote config check is disabled OR no existing agent provides remote configuration) (supports custom trace-agents by default)
+  - Agent: Only spawns if agent is enabled AND no existing agent provides remote configuration (supports custom trace-agents by default)
 - Runtime overrides via environment variables (parsed with shell-words):
-  - `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS` (set to empty string to disable agent)
+  - `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`
   - `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`
   - `LIBAGENT_MONITOR_INTERVAL_SECS`
-  - `LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK` (enable port 5001 check; disabled by default for custom trace-agents)
+  - `LIBAGENT_AGENT_ENABLED` (enable main agent; disabled by default for custom trace-agents)
   - Transport endpoints:
     - Unix UDS: `LIBAGENT_TRACE_AGENT_UDS` (default: `/tmp/datadog_libagent.socket`)
     - Windows Named Pipe: `LIBAGENT_TRACE_AGENT_PIPE` (default: `datadog-libagent`, full path `\\.\\pipe\\datadog-libagent`)

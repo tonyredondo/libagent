@@ -14,6 +14,7 @@ fn initialize_and_stop_kills_children() {
 
     // Configure both agent and trace agent to use the same stub
     unsafe {
+        env::set_var("LIBAGENT_AGENT_ENABLED", "true");
         env::set_var("LIBAGENT_AGENT_PROGRAM", &stub.script);
         env::set_var("LIBAGENT_TRACE_AGENT_PROGRAM", &stub.script);
         env::set_var("LIBAGENT_AGENT_ARGS", "");

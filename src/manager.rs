@@ -198,12 +198,13 @@ fn is_pipe_in_use(pipe_name: &str) -> bool {
 /// Checks if the remote configuration gRPC service is available on the main agent.
 /// Returns true if there's already an agent running that provides remote config.
 /// If true, we should skip spawning our own agent to avoid conflicts.
-/// If remote config check is disabled (default), always returns false.
+/// Remote config is only checked when agent is enabled.
 fn is_remote_config_available() -> bool {
-    use crate::config::is_remote_config_check_enabled;
+    use crate::config::is_agent_enabled;
 
-    if !is_remote_config_check_enabled() {
-        log_debug("Remote configuration check disabled (default), will spawn agent if configured");
+    // Only check remote config if agent is enabled
+    if !is_agent_enabled() {
+        log_debug("Agent disabled, skipping remote configuration check");
         return false;
     }
 
@@ -282,15 +283,17 @@ pub struct AgentManager {
 impl AgentManager {
     /// Creates a new manager with default `ProcessSpec`s based on constants.
     fn new() -> Self {
+        use crate::config::is_agent_enabled;
+
         let agent_program = get_agent_program();
         let agent_args = get_agent_args();
 
-        // Only create agent spec if program is not empty (allows disabling agent)
-        let agent_spec = if agent_program.trim().is_empty() {
-            log_debug("Agent program not configured, skipping agent management");
-            None
-        } else {
+        // Only create agent spec if agent is enabled
+        let agent_spec = if is_agent_enabled() {
             Some(ProcessSpec::new("agent", agent_program, agent_args))
+        } else {
+            log_debug("Agent disabled, skipping agent management");
+            None
         };
 
         Self {
@@ -1230,65 +1233,57 @@ mod tests {
     #[test]
     #[serial]
     fn test_agent_manager_optional_agent() {
-        // Test that agent is optional when program is empty
+        // Test that agent is disabled by default
         unsafe {
-            std::env::set_var("LIBAGENT_AGENT_PROGRAM", "");
+            std::env::remove_var("LIBAGENT_AGENT_ENABLED");
         }
 
         let manager = AgentManager::new();
         assert!(manager.agent_spec.is_none());
-
-        unsafe {
-            std::env::remove_var("LIBAGENT_AGENT_PROGRAM");
-        }
     }
 
     #[test]
     #[serial]
     fn test_agent_manager_with_agent() {
-        // Test that agent is created when program is set
+        // Test that agent is created when enabled
         unsafe {
-            std::env::set_var("LIBAGENT_AGENT_PROGRAM", "/usr/bin/test-agent");
+            std::env::set_var("LIBAGENT_AGENT_ENABLED", "true");
         }
 
         let manager = AgentManager::new();
         assert!(manager.agent_spec.is_some());
-        assert_eq!(
-            manager.agent_spec.as_ref().unwrap().program,
-            "/usr/bin/test-agent"
-        );
 
         unsafe {
-            std::env::remove_var("LIBAGENT_AGENT_PROGRAM");
+            std::env::remove_var("LIBAGENT_AGENT_ENABLED");
         }
     }
 
     #[test]
     #[serial]
     fn test_is_remote_config_available_disabled() {
-        // Test that remote config check is disabled by default
+        // Test that remote config check is skipped when agent is disabled (default)
         unsafe {
-            std::env::remove_var("LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK");
+            std::env::remove_var("LIBAGENT_AGENT_ENABLED");
         }
 
-        // Should return false when check is disabled (default behavior)
+        // Should return false when agent is disabled (no remote config check)
         assert!(!is_remote_config_available());
     }
 
     #[test]
     #[serial]
     fn test_is_remote_config_available_enabled() {
-        // Test that remote config check can be enabled
+        // Test that remote config check runs when agent is enabled
         unsafe {
-            std::env::set_var("LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK", "true");
+            std::env::set_var("LIBAGENT_AGENT_ENABLED", "true");
         }
 
         // Should attempt the actual check (may succeed or fail based on system state)
-        // We just verify it doesn't immediately return false due to being disabled
+        // We just verify it doesn't immediately return false due to agent being disabled
         let _ = is_remote_config_available();
 
         unsafe {
-            std::env::remove_var("LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK");
+            std::env::remove_var("LIBAGENT_AGENT_ENABLED");
         }
     }
 }

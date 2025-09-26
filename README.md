@@ -121,29 +121,29 @@ Notes: The `Initialize` and `Stop` FFI functions return `void`. The `ProxyTraceA
 
 ## Configuration
 Defaults live in `src/config.rs`. Override at runtime via environment variables:
-- `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS` (leave empty to disable agent)
+- `LIBAGENT_AGENT_ENABLED` (enable main agent; disabled by default for custom trace-agents)
+- `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`
 - `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`
 - `LIBAGENT_MONITOR_INTERVAL_SECS`
-- `LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK` (enable port 5001 check; disabled by default for custom trace-agents)
 - Logging: `LIBAGENT_LOG` (error|warn|info|debug), `LIBAGENT_DEBUG` (1/true)
 
 Notes:
 - `*_ARGS` values are parsed using shell-words. Quote arguments as you would in a shell, e.g. `LIBAGENT_AGENT_ARGS='-c "my arg"'`.
-- Remote config check is **disabled by default** to support custom trace-agents.
-- Set `LIBAGENT_AGENT_PROGRAM=""` to run trace-agent only (useful for custom trace-agent implementations).
-- Set `LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK=true` to enable traditional Datadog agent cooperation.
+- Agent is **disabled by default** to support custom trace-agent implementations.
+- Set `LIBAGENT_AGENT_ENABLED=true` to enable the main Datadog agent.
+- When agent is enabled, remote config cooperation is automatically enabled.
 
-Example:
+Example with main agent enabled:
 ```sh
+LIBAGENT_AGENT_ENABLED=true \
 LIBAGENT_AGENT_PROGRAM=/usr/bin/datadog-agent \
 LIBAGENT_TRACE_AGENT_PROGRAM=/usr/bin/trace-agent \
 LIBAGENT_LOG=info LIBAGENT_MONITOR_INTERVAL_SECS=1 \
 cargo +nightly test -- --nocapture
 ```
 
-Trace-agent only (skip main agent):
+Trace-agent only (default behavior):
 ```sh
-LIBAGENT_AGENT_PROGRAM="" \
 LIBAGENT_TRACE_AGENT_PROGRAM=/path/to/custom/trace-agent \
 LIBAGENT_LOG=info \
 cargo +nightly test -- --nocapture
@@ -151,9 +151,9 @@ cargo +nightly test -- --nocapture
 
 Traditional Datadog agent cooperation:
 ```sh
+LIBAGENT_AGENT_ENABLED=true \
 LIBAGENT_AGENT_PROGRAM=/usr/bin/datadog-agent \
 LIBAGENT_TRACE_AGENT_PROGRAM=/usr/bin/trace-agent \
-LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK=true \
 LIBAGENT_LOG=info \
 cargo +nightly test -- --nocapture
 ```
