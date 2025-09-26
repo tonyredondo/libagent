@@ -42,13 +42,14 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 - Never commit code that fails these checks. Use pre-commit hooks or CI to enforce compliance.
 
 ## Security & Configuration Tips
-- Default programs/args live in `src/config.rs`. Runtime overrides (for dev/tests): `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`, `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`, `LIBAGENT_MONITOR_INTERVAL_SECS`, `LIBAGENT_LOG`, `LIBAGENT_DEBUG`.
+- Default programs/args live in `src/config.rs`. Runtime overrides (for dev/tests): `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`, `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`, `LIBAGENT_MONITOR_INTERVAL_SECS`, `LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK`, `LIBAGENT_LOG`, `LIBAGENT_DEBUG`.
 - **Trace Agent IPC-Only Operation**: The trace-agent is automatically configured for IPC-only operation (TCP port disabled) to ensure secure, local-only communication. Custom UDS/Named Pipe paths prevent conflicts with system installations.
-- **Smart Process Spawning**: Trace-agent only spawns if IPC resources are available; Agent only spawns if no existing remote configuration service is detected. This prevents conflicts between multiple libagent instances and respects existing Datadog installations.
+- **Smart Process Spawning**: Trace-agent only spawns if IPC resources are available; Agent only spawns if configured AND (remote config check is disabled OR no existing remote configuration service is detected). Remote config check is disabled by default to support custom trace-agents. This prevents conflicts between multiple libagent instances and respects existing Datadog installations.
 - **Process Ownership Safety**: libagent only terminates processes it spawned. External processes using the same IPC resources are left untouched.
 - UDS proxy: `LIBAGENT_TRACE_AGENT_UDS` overrides the Unix socket path used by `ProxyTraceAgent` (default: `/tmp/datadog_libagent.socket`).
 - Windows Named Pipe proxy: `LIBAGENT_TRACE_AGENT_PIPE` overrides the pipe name used by `ProxyTraceAgent` on Windows (default: `datadog-libagent`, full path: `\\.\\pipe\\datadog-libagent`).
 - `*_ARGS` values are parsed using shell-words. Quote arguments as you would in a shell (e.g., `LIBAGENT_AGENT_ARGS='-c "my arg"'`).
+- `LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK` enables port 5001 check for agent cooperation (disabled by default for custom trace-agents).
 - Example: `LIBAGENT_LOG=debug LIBAGENT_MONITOR_INTERVAL_SECS=1 cargo +nightly test -- --nocapture`.
 
 ## FFI & Headers

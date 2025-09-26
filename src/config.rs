@@ -59,6 +59,7 @@ const ENV_AGENT_ARGS: &str = "LIBAGENT_AGENT_ARGS";
 const ENV_TRACE_AGENT_PROGRAM: &str = "LIBAGENT_TRACE_AGENT_PROGRAM";
 const ENV_TRACE_AGENT_ARGS: &str = "LIBAGENT_TRACE_AGENT_ARGS";
 const ENV_MONITOR_INTERVAL_SECS: &str = "LIBAGENT_MONITOR_INTERVAL_SECS";
+const ENV_ENABLE_REMOTE_CONFIG_CHECK: &str = "LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK";
 #[cfg(unix)]
 const ENV_TRACE_AGENT_UDS: &str = "LIBAGENT_TRACE_AGENT_UDS";
 #[cfg(windows)]
@@ -186,6 +187,19 @@ pub fn get_backoff_max_secs() -> u64 {
 #[allow(dead_code)] // Reserved for future shutdown timeout validation
 pub fn get_graceful_shutdown_timeout_secs() -> u64 {
     GRACEFUL_SHUTDOWN_TIMEOUT_SECS // This is a compile-time constant, no runtime override needed
+}
+
+/// Returns true if remote config check should be enabled.
+/// When enabled, agent spawning will check for existing remote config service on port 5001.
+/// When disabled (default), agent spawning will not perform this check, allowing custom trace-agents.
+/// This is useful when running a custom trace-agent that doesn't provide remote config.
+pub fn is_remote_config_check_enabled() -> bool {
+    std::env::var(ENV_ENABLE_REMOTE_CONFIG_CHECK)
+        .map(|val| {
+            let normalized = val.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -533,6 +547,64 @@ mod tests {
         );
         unsafe {
             std::env::remove_var(ENV_TRACE_AGENT_ARGS);
+        }
+    }
+
+    #[test]
+    fn test_is_remote_config_check_enabled_default() {
+        // Clean up any environment variables from previous tests
+        unsafe {
+            std::env::remove_var(ENV_ENABLE_REMOTE_CONFIG_CHECK);
+        }
+        // Test default value - should be false (disabled by default)
+        assert!(!is_remote_config_check_enabled());
+    }
+
+    #[test]
+    #[serial]
+    fn test_is_remote_config_check_enabled_true() {
+        unsafe {
+            std::env::set_var(ENV_ENABLE_REMOTE_CONFIG_CHECK, "true");
+        }
+        assert!(is_remote_config_check_enabled());
+        unsafe {
+            std::env::remove_var(ENV_ENABLE_REMOTE_CONFIG_CHECK);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_is_remote_config_check_enabled_1() {
+        unsafe {
+            std::env::set_var(ENV_ENABLE_REMOTE_CONFIG_CHECK, "1");
+        }
+        assert!(is_remote_config_check_enabled());
+        unsafe {
+            std::env::remove_var(ENV_ENABLE_REMOTE_CONFIG_CHECK);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_is_remote_config_check_enabled_yes() {
+        unsafe {
+            std::env::set_var(ENV_ENABLE_REMOTE_CONFIG_CHECK, "yes");
+        }
+        assert!(is_remote_config_check_enabled());
+        unsafe {
+            std::env::remove_var(ENV_ENABLE_REMOTE_CONFIG_CHECK);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_is_remote_config_check_enabled_false() {
+        unsafe {
+            std::env::set_var(ENV_ENABLE_REMOTE_CONFIG_CHECK, "false");
+        }
+        assert!(!is_remote_config_check_enabled());
+        unsafe {
+            std::env::remove_var(ENV_ENABLE_REMOTE_CONFIG_CHECK);
         }
     }
 }

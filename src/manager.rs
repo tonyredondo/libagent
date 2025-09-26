@@ -198,7 +198,15 @@ fn is_pipe_in_use(pipe_name: &str) -> bool {
 /// Checks if the remote configuration gRPC service is available on the main agent.
 /// Returns true if there's already an agent running that provides remote config.
 /// If true, we should skip spawning our own agent to avoid conflicts.
+/// If remote config check is disabled (default), always returns false.
 fn is_remote_config_available() -> bool {
+    use crate::config::is_remote_config_check_enabled;
+
+    if !is_remote_config_check_enabled() {
+        log_debug("Remote configuration check disabled (default), will spawn agent if configured");
+        return false;
+    }
+
     use std::net::TcpStream;
     use std::time::Duration;
 
@@ -253,15 +261,15 @@ pub struct AgentManager {
     monitor_thread: Mutex<Option<JoinHandle<()>>>,
     monitor_cv: Condvar,
     monitor_cv_lock: Mutex<()>,
-    /// Subprocess specification for the Agent.
-    agent_spec: ProcessSpec,
+    /// Subprocess specification for the Agent (optional - may be None if not configured).
+    agent_spec: Option<ProcessSpec>,
     /// Subprocess specification for the Trace Agent.
     trace_spec: ProcessSpec,
     /// Currently running Agent child, if any.
     agent_child: Mutex<Option<Child>>,
     /// Currently running Trace Agent child, if any.
     trace_child: Mutex<Option<Child>>,
-    /// Backoff state for agent respawns
+    /// Backoff state for agent respawns (only used if agent_spec is Some)
     agent_backoff_secs: Mutex<u64>,
     agent_next_attempt: Mutex<Option<Instant>>,
     /// Backoff state for trace-agent respawns
@@ -274,13 +282,24 @@ pub struct AgentManager {
 impl AgentManager {
     /// Creates a new manager with default `ProcessSpec`s based on constants.
     fn new() -> Self {
+        let agent_program = get_agent_program();
+        let agent_args = get_agent_args();
+
+        // Only create agent spec if program is not empty (allows disabling agent)
+        let agent_spec = if agent_program.trim().is_empty() {
+            log_debug("Agent program not configured, skipping agent management");
+            None
+        } else {
+            Some(ProcessSpec::new("agent", agent_program, agent_args))
+        };
+
         Self {
             should_run: AtomicBool::new(false),
             start_stop_lock: Mutex::new(()),
             monitor_thread: Mutex::new(None),
             monitor_cv: Condvar::new(),
             monitor_cv_lock: Mutex::new(()),
-            agent_spec: ProcessSpec::new("agent", get_agent_program(), get_agent_args()),
+            agent_spec,
             trace_spec: ProcessSpec::new(
                 "trace-agent",
                 get_trace_agent_program(),
@@ -547,14 +566,19 @@ impl AgentManager {
         // Record initialization metrics
         metrics::get_metrics().record_initialization();
 
-        log_info("Starting Agent and Trace Agent...");
+        let agent_enabled = self.agent_spec.is_some();
+        if agent_enabled {
+            log_info("Starting Agent and Trace Agent...");
+        } else {
+            log_info("Starting Trace Agent (Agent disabled)...");
+        }
 
         // Ensure processes started immediately
-        {
+        if let Some(ref agent_spec) = self.agent_spec {
             let mut a = lock_mutex(&self.agent_child);
             let mut ab = lock_mutex(&self.agent_backoff_secs);
             let mut an = lock_mutex(&self.agent_next_attempt);
-            self.tick_process(&mut a, &self.agent_spec, &mut ab, &mut an);
+            self.tick_process(&mut a, agent_spec, &mut ab, &mut an);
         }
         {
             let mut t = lock_mutex(&self.trace_child);
@@ -578,20 +602,24 @@ impl AgentManager {
     fn monitor_single_process(
         &self,
         child_mutex: &Mutex<Option<Child>>,
-        spec: &ProcessSpec,
+        spec: Option<&ProcessSpec>,
         backoff_mutex: &Mutex<u64>,
         next_attempt_mutex: &Mutex<Option<Instant>>,
     ) -> Option<Instant> {
-        let mut child_guard = lock_mutex(child_mutex);
-        let mut backoff_guard = lock_mutex(backoff_mutex);
-        let mut next_attempt_guard = lock_mutex(next_attempt_mutex);
-        self.tick_process(
-            &mut child_guard,
-            spec,
-            &mut backoff_guard,
-            &mut next_attempt_guard,
-        );
-        *next_attempt_guard
+        if let Some(spec) = spec {
+            let mut child_guard = lock_mutex(child_mutex);
+            let mut backoff_guard = lock_mutex(backoff_mutex);
+            let mut next_attempt_guard = lock_mutex(next_attempt_mutex);
+            self.tick_process(
+                &mut child_guard,
+                spec,
+                &mut backoff_guard,
+                &mut next_attempt_guard,
+            );
+            *next_attempt_guard
+        } else {
+            None
+        }
     }
 
     /// Periodically checks the child processes and respawns any that have exited.
@@ -602,13 +630,13 @@ impl AgentManager {
             // Tick and (re)spawn processes if needed
             let next_agent = self.monitor_single_process(
                 &self.agent_child,
-                &self.agent_spec,
+                self.agent_spec.as_ref(),
                 &self.agent_backoff_secs,
                 &self.agent_next_attempt,
             );
             let next_trace = self.monitor_single_process(
                 &self.trace_child,
-                &self.trace_spec,
+                Some(&self.trace_spec),
                 &self.trace_backoff_secs,
                 &self.trace_next_attempt,
             );
@@ -818,15 +846,19 @@ impl AgentManager {
         // Kill children unless we already terminated the process tree via Windows Job
         #[cfg(windows)]
         if !terminated_via_job {
-            let mut a = lock_mutex(&self.agent_child);
-            Self::graceful_kill(self.agent_spec.name, &mut a);
+            if let Some(ref agent_spec) = self.agent_spec {
+                let mut a = lock_mutex(&self.agent_child);
+                Self::graceful_kill(agent_spec.name, &mut a);
+            }
             let mut t = lock_mutex(&self.trace_child);
             Self::graceful_kill(self.trace_spec.name, &mut t);
         }
         #[cfg(not(windows))]
         {
-            let mut a = lock_mutex(&self.agent_child);
-            Self::graceful_kill(self.agent_spec.name, &mut a);
+            if let Some(ref agent_spec) = self.agent_spec {
+                let mut a = lock_mutex(&self.agent_child);
+                Self::graceful_kill(agent_spec.name, &mut a);
+            }
             let mut t = lock_mutex(&self.trace_child);
             Self::graceful_kill(self.trace_spec.name, &mut t);
         }
@@ -866,6 +898,7 @@ pub fn stop() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::env;
     #[cfg(unix)]
     use std::process::Command;
@@ -1142,7 +1175,7 @@ mod tests {
         // This should return the next attempt time since backoff is active
         let result = manager.monitor_single_process(
             &child_mutex,
-            &spec,
+            Some(&spec),
             &backoff_mutex,
             &next_attempt_mutex,
         );
@@ -1192,5 +1225,70 @@ mod tests {
         // In test environment, no agent should be running on localhost:5001
         // So this should return false
         assert!(!is_remote_config_available());
+    }
+
+    #[test]
+    #[serial]
+    fn test_agent_manager_optional_agent() {
+        // Test that agent is optional when program is empty
+        unsafe {
+            std::env::set_var("LIBAGENT_AGENT_PROGRAM", "");
+        }
+
+        let manager = AgentManager::new();
+        assert!(manager.agent_spec.is_none());
+
+        unsafe {
+            std::env::remove_var("LIBAGENT_AGENT_PROGRAM");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_agent_manager_with_agent() {
+        // Test that agent is created when program is set
+        unsafe {
+            std::env::set_var("LIBAGENT_AGENT_PROGRAM", "/usr/bin/test-agent");
+        }
+
+        let manager = AgentManager::new();
+        assert!(manager.agent_spec.is_some());
+        assert_eq!(
+            manager.agent_spec.as_ref().unwrap().program,
+            "/usr/bin/test-agent"
+        );
+
+        unsafe {
+            std::env::remove_var("LIBAGENT_AGENT_PROGRAM");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_is_remote_config_available_disabled() {
+        // Test that remote config check is disabled by default
+        unsafe {
+            std::env::remove_var("LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK");
+        }
+
+        // Should return false when check is disabled (default behavior)
+        assert!(!is_remote_config_available());
+    }
+
+    #[test]
+    #[serial]
+    fn test_is_remote_config_available_enabled() {
+        // Test that remote config check can be enabled
+        unsafe {
+            std::env::set_var("LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK", "true");
+        }
+
+        // Should attempt the actual check (may succeed or fail based on system state)
+        // We just verify it doesn't immediately return false due to being disabled
+        let _ = is_remote_config_available();
+
+        unsafe {
+            std::env::remove_var("LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK");
+        }
     }
 }

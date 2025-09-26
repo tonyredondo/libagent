@@ -45,9 +45,10 @@ libagent implements smart process spawning to prevent conflicts and ensure coope
 - **Configuration**: IPC-only mode (TCP disabled, custom socket/pipe path)
 
 ### Agent Spawning
-- **Spawns when**: No existing Datadog agent provides remote configuration on `localhost:5001`
-- **Skips when**: Existing agent is running and provides remote config service
-- **Purpose**: Avoid conflicts with system-wide Datadog installations
+- **Spawns when**: Agent program is configured AND (remote config check is disabled OR no existing agent provides remote configuration on `localhost:5001`)
+- **Skips when**: Agent program is not configured (empty string) OR (remote config check is enabled AND existing agent provides remote config service)
+- **Purpose**: Support custom trace-agents by default; allow traditional Datadog agent cooperation when explicitly enabled
+- **Configuration**: Set `LIBAGENT_AGENT_PROGRAM=""` to disable agent spawning; set `LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK=true` for traditional behavior
 
 ### Monitoring & Recovery
 - Both processes are continuously monitored and automatically restarted on failure
@@ -120,19 +121,40 @@ Notes: The `Initialize` and `Stop` FFI functions return `void`. The `ProxyTraceA
 
 ## Configuration
 Defaults live in `src/config.rs`. Override at runtime via environment variables:
-- `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`
+- `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS` (leave empty to disable agent)
 - `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`
 - `LIBAGENT_MONITOR_INTERVAL_SECS`
+- `LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK` (enable port 5001 check; disabled by default for custom trace-agents)
 - Logging: `LIBAGENT_LOG` (error|warn|info|debug), `LIBAGENT_DEBUG` (1/true)
 
 Notes:
 - `*_ARGS` values are parsed using shell-words. Quote arguments as you would in a shell, e.g. `LIBAGENT_AGENT_ARGS='-c "my arg"'`.
+- Remote config check is **disabled by default** to support custom trace-agents.
+- Set `LIBAGENT_AGENT_PROGRAM=""` to run trace-agent only (useful for custom trace-agent implementations).
+- Set `LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK=true` to enable traditional Datadog agent cooperation.
 
 Example:
 ```sh
 LIBAGENT_AGENT_PROGRAM=/usr/bin/datadog-agent \
 LIBAGENT_TRACE_AGENT_PROGRAM=/usr/bin/trace-agent \
 LIBAGENT_LOG=info LIBAGENT_MONITOR_INTERVAL_SECS=1 \
+cargo +nightly test -- --nocapture
+```
+
+Trace-agent only (skip main agent):
+```sh
+LIBAGENT_AGENT_PROGRAM="" \
+LIBAGENT_TRACE_AGENT_PROGRAM=/path/to/custom/trace-agent \
+LIBAGENT_LOG=info \
+cargo +nightly test -- --nocapture
+```
+
+Traditional Datadog agent cooperation:
+```sh
+LIBAGENT_AGENT_PROGRAM=/usr/bin/datadog-agent \
+LIBAGENT_TRACE_AGENT_PROGRAM=/usr/bin/trace-agent \
+LIBAGENT_ENABLE_REMOTE_CONFIG_CHECK=true \
+LIBAGENT_LOG=info \
 cargo +nightly test -- --nocapture
 ```
 
