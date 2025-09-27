@@ -13,8 +13,8 @@ Prerequisites
 - Ensure the dynamic library can be found by your loader:
   - Linux: export `LD_LIBRARY_PATH=target/debug` (or `target/release`).
   - macOS: export `DYLD_LIBRARY_PATH=target/debug` (or `target/release`).
-- Socket path (Unix): set `LIBAGENT_TRACE_AGENT_UDS` to your trace-agent UDS path if not using the default `/tmp/datadog_libagent.socket`.
-- Windows Named Pipe: set `LIBAGENT_TRACE_AGENT_PIPE` to the pipe name (default `datadog-libagent`). Uses a reusable worker pool (4 workers by default) to handle concurrent requests efficiently under high load, with per-request timeout support (default: 50 seconds).
+- Socket path (Unix): set `LIBAGENT_TRACE_AGENT_UDS` to your trace-agent UDS path if not using the default `/tmp/datadog_libagent.socket`. The same value is used when libagent spawns its managed trace-agent, checks readiness, and issues proxy calls.
+- Windows Named Pipe: set `LIBAGENT_TRACE_AGENT_PIPE` to the pipe name (default `datadog-libagent`). The override is shared by process spawning, readiness checks, and proxy calls. Uses a reusable worker pool (4 workers by default) to handle concurrent requests efficiently under high load, with per-request timeout support (default: 50 seconds).
 
 Notes
 - **Complete API Lifecycle**: All examples demonstrate the full libagent workflow: Initialize → GetMetrics → ProxyTraceAgent → GetMetrics → Stop

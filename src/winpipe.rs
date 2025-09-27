@@ -6,7 +6,7 @@
 //! Timeout is enforced using a separate thread with cancellation support (default: 50 seconds).
 //! The request thread can be interrupted at key points during the HTTP transaction.
 
-use crate::manager::log_debug;
+use crate::logging::log_debug;
 use std::io::Write;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};

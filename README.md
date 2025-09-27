@@ -22,13 +22,17 @@ Outputs include a Rust `rlib` and a shared library (`.so/.dylib/.dll`) per the c
 
 ## Architecture Overview
 - Public API: `lib.rs` re-exports `initialize`/`stop`; a destructor (`#[ctor::dtor]`) calls `stop` on unload.
-- Process Manager (`manager.rs`): spawns Agent and Trace Agent; monitors with periodic ticks and exponential backoff; restarts on exit.
+- Process Manager (`manager.rs`): orchestrates overall agent management, coordinating between logging, process spawning, monitoring, and shutdown.
+- Logging (`logging.rs`): centralized logging functionality with environment variable parsing for log level and debug mode.
+- Process Spawning (`process.rs`): platform-specific process spawning logic including `setsid()` on Unix and Job Objects on Windows.
+- Shutdown (`shutdown.rs`): platform-specific process termination with graceful escalation strategies.
+- Monitor (`monitor.rs`): background monitoring thread implementing respawn logic with exponential backoff and IPC resource conflict detection.
   - Unix: children run in their own session (`setsid`); sends `SIGTERM`, then `SIGKILL` to the process group on shutdown.
   - Windows: assigns children to a Job; terminating the Job kills the tree.
   - **Trace Agent Configuration**: automatically configured for IPC-only operation (TCP port disabled, custom UDS/Named Pipe paths).
-  - **Smart Spawning**: Trace-agent only spawns if IPC socket/pipe is available; Agent only spawns if no existing remote config service exists.
+  - **Smart Spawning**: Trace-agent only spawns if IPC socket/pipe is available; Agent only spawns if enabled AND no existing remote configuration service is detected.
 - Configuration (`config.rs`): compile-time defaults with env overrides parsed via `shell-words`; tunables include programs, args, and monitor interval.
-- FFI (`ffi.rs`): exports `Initialize`, `Stop`, and a transport-agnostic trace-agent proxy (`ProxyTraceAgent`) with `catch_unwind`.
+- FFI (`ffi.rs`): exports `Initialize`, `Stop`, `GetMetrics`, and a transport-agnostic trace-agent proxy (`ProxyTraceAgent`) with `catch_unwind`.
   - Unix: connects over UDS.
   - Windows: connects over Windows Named Pipes.
 - Logging: `LIBAGENT_LOG` level and `LIBAGENT_DEBUG` to inherit child stdout/stderr.
@@ -42,7 +46,7 @@ libagent implements smart process spawning to prevent conflicts and ensure coope
 ### Trace-Agent Spawning
 - **Spawns when**: IPC socket/pipe (`/tmp/datadog_libagent.socket` or `\\.\pipe\datadog-libagent`) is available
 - **Skips when**: Another process is already using the IPC endpoint
-- **Configuration**: IPC-only mode (TCP disabled, custom socket/pipe path)
+- **Configuration**: IPC-only mode (TCP disabled, custom socket/pipe path). Overrides via `LIBAGENT_TRACE_AGENT_UDS` or `LIBAGENT_TRACE_AGENT_PIPE` apply to process spawning, monitor conflict detection, readiness checks, and the proxy so every component targets the same endpoint.
 
 ### Agent Spawning
 - **Spawns when**: `LIBAGENT_AGENT_ENABLED=true` AND no existing agent provides remote configuration on `localhost:5001`
@@ -144,6 +148,7 @@ Defaults live in `src/config.rs`. Override at runtime via environment variables:
 - `LIBAGENT_AGENT_ENABLED` (enable main agent; disabled by default for custom trace-agents)
 - `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`
 - `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`
+- `LIBAGENT_TRACE_AGENT_UDS`, `LIBAGENT_TRACE_AGENT_PIPE` (override IPC endpoints; respected by the spawner, monitor, readiness checks, and proxy requests)
 - `LIBAGENT_MONITOR_INTERVAL_SECS`
 - Logging: `LIBAGENT_LOG` (error|warn|info|debug), `LIBAGENT_DEBUG` (1/true)
 

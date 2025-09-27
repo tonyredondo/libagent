@@ -3,7 +3,8 @@
 ## Project Structure & Module Organization
 - For a deeper architectural description (lifecycle, backoff, platform specifics), see ARCHITECTURE.md.
 - `src/` — core library code:
-  - `lib.rs` (public API: `initialize`, `stop`), `ffi.rs` (C FFI: `Initialize`, `Stop`, `ProxyTraceAgent`), `manager.rs` (process lifecycle), `config.rs` (constants/env overrides), `http.rs` (shared HTTP parsing utilities), `uds.rs` (HTTP-over-UDS client), `winpipe.rs` (HTTP-over-Windows-Named-Pipe client).
+  - `lib.rs` (public API: `initialize`, `stop`), `ffi.rs` (C FFI: `Initialize`, `Stop`, `ProxyTraceAgent`, `GetMetrics`), `manager.rs` (process lifecycle orchestration), `config.rs` (constants/env overrides), `http.rs` (shared HTTP parsing utilities), `uds.rs` (HTTP-over-UDS client), `winpipe.rs` (HTTP-over-Windows-Named-Pipe client).
+  - `logging.rs` (centralized logging functionality), `process.rs` (platform-specific process spawning), `shutdown.rs` (platform-specific process termination), `monitor.rs` (background monitoring thread), `metrics.rs` (observability metrics tracking).
 - `tests/` — integration tests (`respawn.rs`, `idempotent.rs`, `start_stop_unix.rs`, `uds_proxy.rs`, `windows_pipe_proxy.rs`, `windows_sanity.rs`) plus helpers in `tests/common/`.
 - `.github/workflows/ci.yml` — GitHub Actions (Linux, macOS, Windows; nightly toolchain).
 - `target/` — build artifacts.
@@ -46,8 +47,9 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 - **Trace Agent IPC-Only Operation**: The trace-agent is automatically configured for IPC-only operation (TCP port disabled) to ensure secure, local-only communication. Custom UDS/Named Pipe paths prevent conflicts with system installations.
 - **Smart Process Spawning**: Trace-agent only spawns if IPC resources are available; Agent only spawns if enabled AND no existing remote configuration service is detected. Agent is disabled by default to support custom trace-agents. When agent is enabled, remote config cooperation is automatically enabled. This prevents conflicts between multiple libagent instances and respects existing Datadog installations.
 - **Process Ownership Safety**: libagent only terminates processes it spawned. External processes using the same IPC resources are left untouched.
-- UDS proxy: `LIBAGENT_TRACE_AGENT_UDS` overrides the Unix socket path used by `ProxyTraceAgent` (default: `/tmp/datadog_libagent.socket`).
-- Windows Named Pipe proxy: `LIBAGENT_TRACE_AGENT_PIPE` overrides the pipe name used by `ProxyTraceAgent` on Windows (default: `datadog-libagent`, full path: `\\.\\pipe\\datadog-libagent`).
+- UDS proxy: `LIBAGENT_TRACE_AGENT_UDS` overrides the Unix socket path used by both the trace-agent spawner and the proxy (default: `/tmp/datadog_libagent.socket`).
+- Windows Named Pipe proxy: `LIBAGENT_TRACE_AGENT_PIPE` overrides the pipe name used by both the trace-agent spawner and the proxy on Windows (default: `datadog-libagent`, full path: `\\.\\pipe\\datadog-libagent`).
+- Monitor conflict detection and readiness checks consume the same overrides so libagent never mixes endpoints across components.
 - `*_ARGS` values are parsed using shell-words. Quote arguments as you would in a shell (e.g., `LIBAGENT_AGENT_ARGS='-c "my arg"'`).
 - `LIBAGENT_AGENT_ENABLED` controls whether the main Datadog agent should be spawned (disabled by default for custom trace-agents).
 - Example: `LIBAGENT_LOG=debug LIBAGENT_MONITOR_INTERVAL_SECS=1 cargo +nightly test -- --nocapture`.

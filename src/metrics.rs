@@ -480,4 +480,161 @@ mod tests {
         let _ = metrics.uptime();
         let _ = metrics.format_metrics();
     }
+
+    #[test]
+    fn test_metrics_all_http_methods() {
+        let metrics = Metrics::new();
+
+        // Test all HTTP methods are recorded correctly
+        metrics.record_proxy_request("GET");
+        metrics.record_proxy_request("POST");
+        metrics.record_proxy_request("PUT");
+        metrics.record_proxy_request("DELETE");
+        metrics.record_proxy_request("PATCH");
+        metrics.record_proxy_request("HEAD");
+        metrics.record_proxy_request("OPTIONS");
+        metrics.record_proxy_request("CUSTOM");
+
+        assert_eq!(metrics.proxy_get_requests(), 1);
+        assert_eq!(metrics.proxy_post_requests(), 1);
+        assert_eq!(metrics.proxy_put_requests(), 1);
+        assert_eq!(metrics.proxy_delete_requests(), 1);
+        assert_eq!(metrics.proxy_patch_requests(), 1);
+        assert_eq!(metrics.proxy_head_requests(), 1);
+        assert_eq!(metrics.proxy_options_requests(), 1);
+        assert_eq!(metrics.proxy_other_requests(), 1);
+    }
+
+    #[test]
+    fn test_metrics_all_status_code_ranges() {
+        let metrics = Metrics::new();
+        use std::time::Duration;
+
+        // Test all status code ranges
+        metrics.record_proxy_response(200, Duration::from_millis(100)); // 2xx
+        metrics.record_proxy_response(301, Duration::from_millis(150)); // 3xx
+        metrics.record_proxy_response(404, Duration::from_millis(50)); // 4xx
+        metrics.record_proxy_response(500, Duration::from_millis(200)); // 5xx
+        metrics.record_proxy_response(100, Duration::from_millis(75)); // Other (should not count)
+
+        assert_eq!(metrics.proxy_2xx_responses(), 1);
+        assert_eq!(metrics.proxy_3xx_responses(), 1);
+        assert_eq!(metrics.proxy_4xx_responses(), 1);
+        assert_eq!(metrics.proxy_5xx_responses(), 1);
+    }
+
+    #[test]
+    fn test_metrics_response_time_ema_calculation() {
+        let metrics = Metrics::new();
+        use std::time::Duration;
+
+        // Test EMA calculation with multiple samples
+        metrics.record_proxy_response(200, Duration::from_millis(100));
+        metrics.record_proxy_response(200, Duration::from_millis(200));
+        metrics.record_proxy_response(200, Duration::from_millis(150));
+
+        // EMA should be calculated (exact value depends on alpha, but should be reasonable)
+        let ema_2xx = metrics.response_time_ema_2xx();
+        assert!(ema_2xx > 0.0);
+        assert!(ema_2xx < 200.0); // Should be within reasonable bounds
+
+        assert_eq!(metrics.response_time_sample_count(), 3);
+    }
+
+    #[test]
+    fn test_metrics_response_time_different_status_codes() {
+        let metrics = Metrics::new();
+        use std::time::Duration;
+
+        // Record responses with different status codes
+        metrics.record_proxy_response(200, Duration::from_millis(100));
+        metrics.record_proxy_response(404, Duration::from_millis(50));
+        metrics.record_proxy_response(500, Duration::from_millis(300));
+
+        // Each status code range should have its own EMA
+        assert!(metrics.response_time_ema_2xx() > 0.0);
+        assert!(metrics.response_time_ema_4xx() > 0.0);
+        assert!(metrics.response_time_ema_5xx() > 0.0);
+
+        // Overall EMA should also be calculated
+        assert!(metrics.response_time_ema_all() > 0.0);
+    }
+
+    #[test]
+    fn test_metrics_format_metrics_comprehensive() {
+        let metrics = Metrics::new();
+        use std::time::Duration;
+
+        // Record various metrics
+        metrics.record_initialization();
+        metrics.record_agent_spawn();
+        metrics.record_trace_agent_spawn();
+        metrics.record_agent_failure();
+        metrics.record_proxy_request("GET");
+        metrics.record_proxy_request("POST");
+        metrics.record_proxy_response(200, Duration::from_millis(100));
+        metrics.record_proxy_response(404, Duration::from_millis(50));
+
+        let formatted = metrics.format_metrics();
+
+        // Check that all sections are present
+        assert!(formatted.contains("libagent metrics:"));
+        assert!(formatted.contains("agent_spawns: 1"));
+        assert!(formatted.contains("trace_agent_spawns: 1"));
+        assert!(formatted.contains("agent_failures: 1"));
+        assert!(formatted.contains("GET: 1"));
+        assert!(formatted.contains("POST: 1"));
+        assert!(formatted.contains("2xx: 1"));
+        assert!(formatted.contains("4xx: 1"));
+        assert!(formatted.contains("uptime_seconds"));
+    }
+
+    #[test]
+    fn test_metrics_zero_values() {
+        let metrics = Metrics::new();
+
+        // Test that all getters return 0 for uninitialized metrics
+        assert_eq!(metrics.agent_spawns(), 0);
+        assert_eq!(metrics.trace_agent_spawns(), 0);
+        assert_eq!(metrics.agent_failures(), 0);
+        assert_eq!(metrics.trace_agent_failures(), 0);
+        assert_eq!(metrics.proxy_get_requests(), 0);
+        assert_eq!(metrics.proxy_post_requests(), 0);
+        assert_eq!(metrics.proxy_2xx_responses(), 0);
+        assert_eq!(metrics.proxy_4xx_responses(), 0);
+        assert_eq!(metrics.response_time_sample_count(), 0);
+        assert_eq!(metrics.response_time_ema_all(), 0.0);
+        assert_eq!(metrics.response_time_ema_2xx(), 0.0);
+        assert_eq!(metrics.response_time_ema_4xx(), 0.0);
+        assert_eq!(metrics.response_time_ema_5xx(), 0.0);
+    }
+
+    #[test]
+    fn test_metrics_uptime_calculation() {
+        let metrics = Metrics::new();
+
+        // Initially no uptime
+        assert!(metrics.uptime().is_none());
+
+        // After recording initialization, uptime should be available
+        metrics.record_initialization();
+        assert!(metrics.uptime().is_some());
+
+        // Uptime should be very small (just recorded)
+        let uptime = metrics.uptime().unwrap();
+        assert!(uptime.as_secs() < 1); // Should be less than 1 second
+    }
+
+    #[test]
+    fn test_global_metrics_singleton() {
+        let metrics1 = get_metrics();
+        let metrics2 = get_metrics();
+
+        // Should return the same instance
+        assert_eq!(metrics1.agent_spawns(), metrics2.agent_spawns());
+
+        // Modifying one should affect the other (singleton behavior)
+        metrics1.record_agent_spawn();
+        assert_eq!(metrics2.agent_spawns(), 1);
+    }
 }

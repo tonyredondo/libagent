@@ -9,8 +9,8 @@
 use crate::config::get_trace_agent_pipe_name;
 #[cfg(unix)]
 use crate::config::get_trace_agent_uds_path;
+use crate::logging::log_debug;
 use crate::manager;
-use crate::manager::log_debug;
 use crate::uds;
 #[cfg(windows)]
 use crate::winpipe;

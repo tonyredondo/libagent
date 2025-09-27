@@ -17,8 +17,12 @@
 mod config;
 mod ffi;
 mod http;
+mod logging;
 mod manager;
 mod metrics;
+mod monitor;
+mod process;
+mod shutdown;
 mod uds;
 #[cfg(windows)]
 mod winpipe;

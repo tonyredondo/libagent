@@ -5,7 +5,7 @@
 //! It is used by the FFI function `ProxyTraceAgent`.
 
 #[cfg(unix)]
-use crate::manager::log_debug;
+use crate::logging::log_debug;
 #[cfg(unix)]
 use std::io::{Read, Write};
 #[cfg(unix)]
