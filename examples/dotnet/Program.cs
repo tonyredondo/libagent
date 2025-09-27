@@ -16,6 +16,15 @@ static class Native
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void ErrorCallback(IntPtr errorMessage, IntPtr userData);
 
+    [DllImport("libagent", EntryPoint = "Initialize")]
+    public static extern void Initialize();
+
+    [DllImport("libagent", EntryPoint = "Stop")]
+    public static extern void Stop();
+
+    [DllImport("libagent", EntryPoint = "GetMetrics")]
+    public static extern MetricsData GetMetrics();
+
     [DllImport("libagent", EntryPoint = "ProxyTraceAgent", CharSet = CharSet.Ansi)]
     public static extern int ProxyTraceAgent(
         string method,
@@ -26,6 +35,37 @@ static class Native
         ResponseCallback onResponse,
         ErrorCallback onError,
         IntPtr userData);
+}
+
+// Metrics data structure matching the C API
+[StructLayout(LayoutKind.Sequential)]
+public struct MetricsData
+{
+    public ulong agent_spawns;
+    public ulong trace_agent_spawns;
+    public ulong agent_failures;
+    public ulong trace_agent_failures;
+    public double uptime_seconds;
+
+    public ulong proxy_get_requests;
+    public ulong proxy_post_requests;
+    public ulong proxy_put_requests;
+    public ulong proxy_delete_requests;
+    public ulong proxy_patch_requests;
+    public ulong proxy_head_requests;
+    public ulong proxy_options_requests;
+    public ulong proxy_other_requests;
+
+    public ulong proxy_2xx_responses;
+    public ulong proxy_3xx_responses;
+    public ulong proxy_4xx_responses;
+    public ulong proxy_5xx_responses;
+
+    public double response_time_ema_all;
+    public double response_time_ema_2xx;
+    public double response_time_ema_4xx;
+    public double response_time_ema_5xx;
+    public ulong response_time_sample_count;
 }
 
 // High-level async API wrapper
@@ -208,10 +248,20 @@ class Program
 {
     static async Task Main()
     {
+        Console.WriteLine("Initializing libagent...");
+        Native.Initialize();
+
+        // Get and display initial metrics
+        Console.WriteLine("\n=== Initial Metrics ===");
+        var metrics = Native.GetMetrics();
+        Console.WriteLine($"Agent spawns: {metrics.agent_spawns}");
+        Console.WriteLine($"Trace agent spawns: {metrics.trace_agent_spawns}");
+        Console.WriteLine($"Uptime: {metrics.uptime_seconds:F2} seconds");
+
         try
         {
             // Example 1: Simple GET request
-            Console.WriteLine("=== Example 1: Simple GET ===");
+            Console.WriteLine("\n=== Example 1: Simple GET ===");
             var response = await LibAgentClient.GetAsync("/info", "Accept: application/json\n");
             Console.WriteLine($"Status: {response.Status}");
             Console.WriteLine($"Headers: {response.Headers}");
@@ -234,6 +284,20 @@ class Program
                 "Content-Type: application/json\n",
                 System.Text.Encoding.UTF8.GetBytes("{\"setting\": true}"));
             Console.WriteLine($"PUT Status: {customResponse.Status}");
+
+            // Get and display final metrics
+            Console.WriteLine("\n=== Final Metrics ===");
+            metrics = Native.GetMetrics();
+            Console.WriteLine($"Agent spawns: {metrics.agent_spawns}");
+            Console.WriteLine($"Trace agent spawns: {metrics.trace_agent_spawns}");
+            Console.WriteLine($"GET requests: {metrics.proxy_get_requests}");
+            Console.WriteLine($"POST requests: {metrics.proxy_post_requests}");
+            Console.WriteLine($"PUT requests: {metrics.proxy_put_requests}");
+            Console.WriteLine($"2xx responses: {metrics.proxy_2xx_responses}");
+            Console.WriteLine($"4xx responses: {metrics.proxy_4xx_responses}");
+            Console.WriteLine($"5xx responses: {metrics.proxy_5xx_responses}");
+            Console.WriteLine($"Avg response time: {metrics.response_time_ema_all:F2} ms");
+            Console.WriteLine($"Uptime: {metrics.uptime_seconds:F2} seconds");
         }
         catch (LibAgentClient.LibAgentException ex)
         {
@@ -242,6 +306,11 @@ class Program
         catch (Exception ex)
         {
             Console.Error.WriteLine($"Unexpected error: {ex.Message}");
+        }
+        finally
+        {
+            Console.WriteLine("\nStopping libagent...");
+            Native.Stop();
         }
     }
 

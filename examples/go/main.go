@@ -218,10 +218,21 @@ func internal_error_callback(errorMessage *C.char, userData unsafe.Pointer) {
 }
 
 func main() {
-	fmt.Println("=== Example 1: Simple GET ===")
+	fmt.Println("Initializing libagent...")
+	C.Initialize()
+
+	// Get and display initial metrics
+	fmt.Println("\n=== Initial Metrics ===")
+	metrics := C.GetMetrics()
+	fmt.Printf("Agent spawns: %d\n", int64(metrics.agent_spawns))
+	fmt.Printf("Trace agent spawns: %d\n", int64(metrics.trace_agent_spawns))
+	fmt.Printf("Uptime: %.2f seconds\n", float64(metrics.uptime_seconds))
+
+	fmt.Println("\n=== Example 1: Simple GET ===")
 	response, err := Get("/info", "Accept: application/json\n")
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
+		C.Stop()
 		return
 	}
 	fmt.Printf("Status: %d\n", response.Status)
@@ -233,6 +244,7 @@ func main() {
 	postResponse, err := Post("/api/test", "Content-Type: application/json\nAccept: application/json\n", postBody)
 	if err != nil {
 		fmt.Printf("POST Error: %v\n", err)
+		C.Stop()
 		return
 	}
 	fmt.Printf("POST Status: %d\n", postResponse.Status)
@@ -242,7 +254,25 @@ func main() {
 		[]byte(`{"setting": true}`))
 	if err != nil {
 		fmt.Printf("PUT Error: %v\n", err)
+		C.Stop()
 		return
 	}
 	fmt.Printf("PUT Status: %d\n", customResponse.Status)
+
+	// Get and display final metrics
+	fmt.Println("\n=== Final Metrics ===")
+	metrics = C.GetMetrics()
+	fmt.Printf("Agent spawns: %d\n", int64(metrics.agent_spawns))
+	fmt.Printf("Trace agent spawns: %d\n", int64(metrics.trace_agent_spawns))
+	fmt.Printf("GET requests: %d\n", int64(metrics.proxy_get_requests))
+	fmt.Printf("POST requests: %d\n", int64(metrics.proxy_post_requests))
+	fmt.Printf("PUT requests: %d\n", int64(metrics.proxy_put_requests))
+	fmt.Printf("2xx responses: %d\n", int64(metrics.proxy_2xx_responses))
+	fmt.Printf("4xx responses: %d\n", int64(metrics.proxy_4xx_responses))
+	fmt.Printf("5xx responses: %d\n", int64(metrics.proxy_5xx_responses))
+	fmt.Printf("Avg response time: %.2f ms\n", float64(metrics.response_time_ema_all))
+	fmt.Printf("Uptime: %.2f seconds\n", float64(metrics.uptime_seconds))
+
+	fmt.Println("\nStopping libagent...")
+	C.Stop()
 }

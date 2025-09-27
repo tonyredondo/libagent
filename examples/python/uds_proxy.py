@@ -16,7 +16,43 @@ lib = ct.CDLL(libname)
 RESPONSE_CALLBACK = ct.CFUNCTYPE(None, ct.c_uint16, ct.c_void_p, ct.c_size_t, ct.c_void_p, ct.c_size_t, ct.c_void_p)
 ERROR_CALLBACK = ct.CFUNCTYPE(None, ct.c_char_p, ct.c_void_p)
 
-# Set up function signature
+# Define MetricsData structure
+class MetricsData(ct.Structure):
+    _fields_ = [
+        ("agent_spawns", ct.c_uint64),
+        ("trace_agent_spawns", ct.c_uint64),
+        ("agent_failures", ct.c_uint64),
+        ("trace_agent_failures", ct.c_uint64),
+        ("uptime_seconds", ct.c_double),
+        ("proxy_get_requests", ct.c_uint64),
+        ("proxy_post_requests", ct.c_uint64),
+        ("proxy_put_requests", ct.c_uint64),
+        ("proxy_delete_requests", ct.c_uint64),
+        ("proxy_patch_requests", ct.c_uint64),
+        ("proxy_head_requests", ct.c_uint64),
+        ("proxy_options_requests", ct.c_uint64),
+        ("proxy_other_requests", ct.c_uint64),
+        ("proxy_2xx_responses", ct.c_uint64),
+        ("proxy_3xx_responses", ct.c_uint64),
+        ("proxy_4xx_responses", ct.c_uint64),
+        ("proxy_5xx_responses", ct.c_uint64),
+        ("response_time_ema_all", ct.c_double),
+        ("response_time_ema_2xx", ct.c_double),
+        ("response_time_ema_4xx", ct.c_double),
+        ("response_time_ema_5xx", ct.c_double),
+        ("response_time_sample_count", ct.c_uint64),
+    ]
+
+# Set up function signatures
+lib.Initialize.argtypes = []
+lib.Initialize.restype = None
+
+lib.Stop.argtypes = []
+lib.Stop.restype = None
+
+lib.GetMetrics.argtypes = []
+lib.GetMetrics.restype = MetricsData
+
 lib.ProxyTraceAgent.argtypes = [
     ct.c_char_p, ct.c_char_p, ct.c_char_p,
     ct.c_void_p, ct.c_size_t,
@@ -47,7 +83,18 @@ def on_error(error_message, user_data):
         print("error: unknown error", file=sys.stderr)
 
 def main():
+    print("Initializing libagent...")
+    lib.Initialize()
+
+    # Get and display initial metrics
+    print("\n=== Initial Metrics ===")
+    metrics = lib.GetMetrics()
+    print(f"Agent spawns: {metrics.agent_spawns}")
+    print(f"Trace agent spawns: {metrics.trace_agent_spawns}")
+    print(f"Uptime: {metrics.uptime_seconds:.2f} seconds")
+
     # Make the request using callbacks - no manual memory management!
+    print("\nMaking proxy request...")
     rc = lib.ProxyTraceAgent(
         b"GET",                           # method
         b"/info",                         # path
@@ -60,6 +107,23 @@ def main():
 
     if rc != 0:
         print("ProxyTraceAgent returned error code:", rc, file=sys.stderr)
+        lib.Stop()
+        return
+
+    # Get and display final metrics
+    print("\n=== Final Metrics ===")
+    metrics = lib.GetMetrics()
+    print(f"Agent spawns: {metrics.agent_spawns}")
+    print(f"Trace agent spawns: {metrics.trace_agent_spawns}")
+    print(f"GET requests: {metrics.proxy_get_requests}")
+    print(f"2xx responses: {metrics.proxy_2xx_responses}")
+    print(f"4xx responses: {metrics.proxy_4xx_responses}")
+    print(f"5xx responses: {metrics.proxy_5xx_responses}")
+    print(f"Avg response time: {metrics.response_time_ema_all:.2f} ms")
+    print(f"Uptime: {metrics.uptime_seconds:.2f} seconds")
+
+    print("\nStopping libagent...")
+    lib.Stop()
 
 if __name__ == '__main__':
     # Example: os.environ['LIBAGENT_TRACE_AGENT_UDS'] = '/var/run/datadog/apm.socket'

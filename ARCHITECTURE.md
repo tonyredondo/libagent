@@ -151,7 +151,8 @@ If the parent application is killed forcefully (SIGKILL, crash, etc.):
 - Resource conflict prevention: Smart spawning prevents multiple instances from competing for IPC resources.
 
 ## FFI Surface
-- C API: `Initialize(void)`, `Stop(void)`, and `ProxyTraceAgent(...)` (see `include/libagent.h`).
+- C API: `Initialize(void)`, `Stop(void)`, `GetMetrics()`, and `ProxyTraceAgent(...)` (see `include/libagent.h`).
+- `GetMetrics()` returns a `MetricsData` struct with comprehensive metrics (process lifecycle, HTTP proxy stats, response times).
 - Rust nightly 2024 uses `#[unsafe(no_mangle)]` on FFI exports to match the current toolchain.
 
 ### Trace Agent Proxy

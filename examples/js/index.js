@@ -12,7 +12,38 @@ const voidPtr = ref.refType(ref.types.void);
 const ResponseCallback = ffi.Callback('void', [uint16, uint8Ptr, size_t, uint8Ptr, size_t, voidPtr]);
 const ErrorCallback = ffi.Callback('void', [charPtr, voidPtr]);
 
+// Define the MetricsData struct layout (24 * 8 bytes = 192 bytes total)
+const MetricsDataFields = [
+  ['agent_spawns', ref.types.uint64],
+  ['trace_agent_spawns', ref.types.uint64],
+  ['agent_failures', ref.types.uint64],
+  ['trace_agent_failures', ref.types.uint64],
+  ['uptime_seconds', ref.types.double],
+  ['proxy_get_requests', ref.types.uint64],
+  ['proxy_post_requests', ref.types.uint64],
+  ['proxy_put_requests', ref.types.uint64],
+  ['proxy_delete_requests', ref.types.uint64],
+  ['proxy_patch_requests', ref.types.uint64],
+  ['proxy_head_requests', ref.types.uint64],
+  ['proxy_options_requests', ref.types.uint64],
+  ['proxy_other_requests', ref.types.uint64],
+  ['proxy_2xx_responses', ref.types.uint64],
+  ['proxy_3xx_responses', ref.types.uint64],
+  ['proxy_4xx_responses', ref.types.uint64],
+  ['proxy_5xx_responses', ref.types.uint64],
+  ['response_time_ema_all', ref.types.double],
+  ['response_time_ema_2xx', ref.types.double],
+  ['response_time_ema_4xx', ref.types.double],
+  ['response_time_ema_5xx', ref.types.double],
+  ['response_time_sample_count', ref.types.uint64],
+];
+
+const MetricsData = ref.refType(ref.types.void); // Buffer to hold struct data
+
 const lib = ffi.Library('libagent', {
+  'Initialize': ['void', []],
+  'Stop': ['void', []],
+  'GetMetrics': [MetricsData, []], // Returns a buffer pointer
   'ProxyTraceAgent': ['int32', ['string', 'string', 'string', voidPtr, size_t, voidPtr, voidPtr, voidPtr]],
 });
 
@@ -162,10 +193,51 @@ class LibAgentClient {
   }
 }
 
+// Helper function to read metrics from buffer
+function readMetrics(buffer) {
+  const view = new DataView(buffer.buffer);
+  let offset = 0;
+
+  return {
+    agent_spawns: Number(view.getBigUint64(offset, true)), offset += 8,
+    trace_agent_spawns: Number(view.getBigUint64(offset, true)), offset += 8,
+    agent_failures: Number(view.getBigUint64(offset, true)), offset += 8,
+    trace_agent_failures: Number(view.getBigUint64(offset, true)), offset += 8,
+    uptime_seconds: view.getFloat64(offset, true), offset += 8,
+    proxy_get_requests: Number(view.getBigUint64(offset, true)), offset += 8,
+    proxy_post_requests: Number(view.getBigUint64(offset, true)), offset += 8,
+    proxy_put_requests: Number(view.getBigUint64(offset, true)), offset += 8,
+    proxy_delete_requests: Number(view.getBigUint64(offset, true)), offset += 8,
+    proxy_patch_requests: Number(view.getBigUint64(offset, true)), offset += 8,
+    proxy_head_requests: Number(view.getBigUint64(offset, true)), offset += 8,
+    proxy_options_requests: Number(view.getBigUint64(offset, true)), offset += 8,
+    proxy_other_requests: Number(view.getBigUint64(offset, true)), offset += 8,
+    proxy_2xx_responses: Number(view.getBigUint64(offset, true)), offset += 8,
+    proxy_3xx_responses: Number(view.getBigUint64(offset, true)), offset += 8,
+    proxy_4xx_responses: Number(view.getBigUint64(offset, true)), offset += 8,
+    proxy_5xx_responses: Number(view.getBigUint64(offset, true)), offset += 8,
+    response_time_ema_all: view.getFloat64(offset, true), offset += 8,
+    response_time_ema_2xx: view.getFloat64(offset, true), offset += 8,
+    response_time_ema_4xx: view.getFloat64(offset, true), offset += 8,
+    response_time_ema_5xx: view.getFloat64(offset, true), offset += 8,
+    response_time_sample_count: Number(view.getBigUint64(offset, true)),
+  };
+}
+
 // Example usage with async/await
 async function main() {
   try {
-    console.log('=== Example 1: Simple GET ===');
+    console.log('Initializing libagent...');
+    lib.Initialize();
+
+    console.log('\n=== Initial Metrics ===');
+    const initialMetricsBuffer = lib.GetMetrics();
+    const initialMetrics = readMetrics(initialMetricsBuffer);
+    console.log('Agent spawns:', initialMetrics.agent_spawns);
+    console.log('Trace agent spawns:', initialMetrics.trace_agent_spawns);
+    console.log('Uptime:', initialMetrics.uptime_seconds.toFixed(2), 'seconds');
+
+    console.log('\n=== Example 1: Simple GET ===');
     const response = await LibAgentClient.get('/info', 'Accept: application/json\n');
     console.log('Status:', response.status);
     console.log('Headers:', response.headers);
@@ -181,7 +253,7 @@ async function main() {
     console.log('POST Status:', postResponse.status);
 
     console.log('\n=== Example 3: Using Promises directly ===');
-    LibAgentClient.request('PUT', '/api/config', 'Content-Type: application/json\n',
+    await LibAgentClient.request('PUT', '/api/config', 'Content-Type: application/json\n',
                           Buffer.from(JSON.stringify({ setting: true })))
       .then(response => {
         console.log('PUT Status:', response.status);
@@ -190,8 +262,26 @@ async function main() {
         console.error('PUT Error:', error.message);
       });
 
+    console.log('\n=== Final Metrics ===');
+    const finalMetricsBuffer = lib.GetMetrics();
+    const finalMetrics = readMetrics(finalMetricsBuffer);
+    console.log('Agent spawns:', finalMetrics.agent_spawns);
+    console.log('Trace agent spawns:', finalMetrics.trace_agent_spawns);
+    console.log('GET requests:', finalMetrics.proxy_get_requests);
+    console.log('POST requests:', finalMetrics.proxy_post_requests);
+    console.log('PUT requests:', finalMetrics.proxy_put_requests);
+    console.log('2xx responses:', finalMetrics.proxy_2xx_responses);
+    console.log('4xx responses:', finalMetrics.proxy_4xx_responses);
+    console.log('5xx responses:', finalMetrics.proxy_5xx_responses);
+    console.log('Avg response time:', finalMetrics.response_time_ema_all.toFixed(2), 'ms');
+    console.log('Uptime:', finalMetrics.uptime_seconds.toFixed(2), 'seconds');
+
+    console.log('\nStopping libagent...');
+    lib.Stop();
+
   } catch (error) {
     console.error('Error:', error.message);
+    lib.Stop();
   }
 }
 

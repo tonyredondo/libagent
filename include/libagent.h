@@ -9,6 +9,31 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+typedef struct MetricsData {
+  uint64_t agent_spawns;
+  uint64_t trace_agent_spawns;
+  uint64_t agent_failures;
+  uint64_t trace_agent_failures;
+  double uptime_seconds;
+  uint64_t proxy_get_requests;
+  uint64_t proxy_post_requests;
+  uint64_t proxy_put_requests;
+  uint64_t proxy_delete_requests;
+  uint64_t proxy_patch_requests;
+  uint64_t proxy_head_requests;
+  uint64_t proxy_options_requests;
+  uint64_t proxy_other_requests;
+  uint64_t proxy_2xx_responses;
+  uint64_t proxy_3xx_responses;
+  uint64_t proxy_4xx_responses;
+  uint64_t proxy_5xx_responses;
+  double response_time_ema_all;
+  double response_time_ema_2xx;
+  double response_time_ema_4xx;
+  double response_time_ema_5xx;
+  uint64_t response_time_sample_count;
+} MetricsData;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -16,6 +41,8 @@ extern "C" {
 void Initialize(void);
 
 void Stop(void);
+
+struct MetricsData GetMetrics(void);
 
 int32_t ProxyTraceAgent(const char *method,
                         const char *path,

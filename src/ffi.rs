@@ -26,6 +26,41 @@ type ValidatedProxyArgs = (String, String, Vec<(String, String)>, Vec<u8>);
 /// Global request ID counter for tracking concurrent requests in debug logs
 static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+/// Metrics data structure for FFI
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MetricsData {
+    /// Process lifecycle metrics
+    pub agent_spawns: u64,
+    pub trace_agent_spawns: u64,
+    pub agent_failures: u64,
+    pub trace_agent_failures: u64,
+    pub uptime_seconds: f64,
+
+    /// HTTP proxy request metrics by method
+    pub proxy_get_requests: u64,
+    pub proxy_post_requests: u64,
+    pub proxy_put_requests: u64,
+    pub proxy_delete_requests: u64,
+    pub proxy_patch_requests: u64,
+    pub proxy_head_requests: u64,
+    pub proxy_options_requests: u64,
+    pub proxy_other_requests: u64,
+
+    /// HTTP proxy response metrics by status code range
+    pub proxy_2xx_responses: u64,
+    pub proxy_3xx_responses: u64,
+    pub proxy_4xx_responses: u64,
+    pub proxy_5xx_responses: u64,
+
+    /// Response time moving averages (milliseconds)
+    pub response_time_ema_all: f64,
+    pub response_time_ema_2xx: f64,
+    pub response_time_ema_4xx: f64,
+    pub response_time_ema_5xx: f64,
+    pub response_time_sample_count: u64,
+}
+
 /// Initialize the library: start the Agent and Trace Agent and begin monitoring.
 ///
 /// This function is safe to call multiple times; subsequent calls are no-ops
@@ -49,6 +84,80 @@ pub extern "C" fn Stop() {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         manager::stop();
     }));
+}
+
+/// Get metrics data structure.
+///
+/// Returns a MetricsData structure containing all current metrics.
+/// This provides direct access to individual metric values without string parsing.
+///
+/// The returned structure is a copy - it can be used immediately without copying.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn GetMetrics() -> MetricsData {
+    log_debug("FFI call: GetMetrics()");
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let metrics = crate::metrics::get_metrics();
+
+        MetricsData {
+            agent_spawns: metrics.agent_spawns(),
+            trace_agent_spawns: metrics.trace_agent_spawns(),
+            agent_failures: metrics.agent_failures(),
+            trace_agent_failures: metrics.trace_agent_failures(),
+            uptime_seconds: metrics.uptime().map(|d| d.as_secs_f64()).unwrap_or(0.0),
+
+            proxy_get_requests: metrics.proxy_get_requests(),
+            proxy_post_requests: metrics.proxy_post_requests(),
+            proxy_put_requests: metrics.proxy_put_requests(),
+            proxy_delete_requests: metrics.proxy_delete_requests(),
+            proxy_patch_requests: metrics.proxy_patch_requests(),
+            proxy_head_requests: metrics.proxy_head_requests(),
+            proxy_options_requests: metrics.proxy_options_requests(),
+            proxy_other_requests: metrics.proxy_other_requests(),
+
+            proxy_2xx_responses: metrics.proxy_2xx_responses(),
+            proxy_3xx_responses: metrics.proxy_3xx_responses(),
+            proxy_4xx_responses: metrics.proxy_4xx_responses(),
+            proxy_5xx_responses: metrics.proxy_5xx_responses(),
+
+            response_time_ema_all: metrics.response_time_ema_all(),
+            response_time_ema_2xx: metrics.response_time_ema_2xx(),
+            response_time_ema_4xx: metrics.response_time_ema_4xx(),
+            response_time_ema_5xx: metrics.response_time_ema_5xx(),
+            response_time_sample_count: metrics.response_time_sample_count(),
+        }
+    }));
+
+    match result {
+        Ok(metrics_data) => metrics_data,
+        Err(_) => {
+            log_debug("FFI GetMetrics: panic occurred, returning zeroed struct");
+            MetricsData {
+                agent_spawns: 0,
+                trace_agent_spawns: 0,
+                agent_failures: 0,
+                trace_agent_failures: 0,
+                uptime_seconds: 0.0,
+                proxy_get_requests: 0,
+                proxy_post_requests: 0,
+                proxy_put_requests: 0,
+                proxy_delete_requests: 0,
+                proxy_patch_requests: 0,
+                proxy_head_requests: 0,
+                proxy_options_requests: 0,
+                proxy_other_requests: 0,
+                proxy_2xx_responses: 0,
+                proxy_3xx_responses: 0,
+                proxy_4xx_responses: 0,
+                proxy_5xx_responses: 0,
+                response_time_ema_all: 0.0,
+                response_time_ema_2xx: 0.0,
+                response_time_ema_4xx: 0.0,
+                response_time_ema_5xx: 0.0,
+                response_time_sample_count: 0,
+            }
+        }
+    }
 }
 
 /// Callback function type for successful HTTP responses.
@@ -335,6 +444,26 @@ mod tests {
         // Test that Stop() can be called without panicking
         // This should be safe to call as it's idempotent
         Stop();
+    }
+
+    #[test]
+    fn test_get_metrics_function() {
+        // Test that GetMetrics() returns a valid MetricsData struct
+        let metrics_data = GetMetrics();
+
+        // Test that we can access individual fields
+        // These should be accessible (may be 0 if no activity)
+        let _agent_spawns = metrics_data.agent_spawns;
+        let _trace_spawns = metrics_data.trace_agent_spawns;
+        let _get_requests = metrics_data.proxy_get_requests;
+        let _post_requests = metrics_data.proxy_post_requests;
+        let _status_2xx = metrics_data.proxy_2xx_responses;
+        let _status_4xx = metrics_data.proxy_4xx_responses;
+        let _response_time_all = metrics_data.response_time_ema_all;
+
+        // Test that calling again still works
+        let metrics_data2 = GetMetrics();
+        assert_eq!(metrics_data2.agent_spawns, metrics_data.agent_spawns);
     }
 
     #[test]

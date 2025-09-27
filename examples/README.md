@@ -1,6 +1,12 @@
-Examples: Calling the Trace Agent Proxy FFI
+Examples: Complete libagent FFI API Usage
 
-These examples show how to call `ProxyTraceAgent` from various languages to proxy an HTTP request over a local IPC transport to the Datadog trace-agent.
+These examples demonstrate the complete libagent FFI API including:
+- **Initialize()** - Start the library and agent processes
+- **GetMetrics()** - Retrieve comprehensive metrics and statistics
+- **ProxyTraceAgent()** - Proxy HTTP requests to the trace-agent
+- **Stop()** - Clean shutdown of all processes
+
+All examples show how to proxy HTTP requests over local IPC transport to the Datadog trace-agent.
 
 Prerequisites
 - Build the library: `cargo +nightly build` (or `--release`).
@@ -11,6 +17,8 @@ Prerequisites
 - Windows Named Pipe: set `LIBAGENT_TRACE_AGENT_PIPE` to the pipe name (default `datadog-libagent`). Uses a reusable worker pool (4 workers by default) to handle concurrent requests efficiently under high load, with per-request timeout support (default: 50 seconds).
 
 Notes
+- **Complete API Lifecycle**: All examples demonstrate the full libagent workflow: Initialize → GetMetrics → ProxyTraceAgent → GetMetrics → Stop
+- **Metrics Collection**: Examples show before/after metrics to demonstrate process lifecycle and HTTP proxy statistics
 - The examples call `GET /info` with `Accept: application/json` to avoid sending large payloads.
 - **High-level APIs available**: Most languages now provide idiomatic async APIs (Tasks, Promises, etc.) that wrap the callback-based FFI
 - **Low-level callback API**: Still available for advanced use cases requiring direct callback control
@@ -27,7 +35,7 @@ Compile (Linux/macOS):
 
 clang -I include -L target/debug -llibagent examples/c/uds_proxy.c -o examples/c/uds_proxy
 
-**API**: Uses callback-based API directly with function pointers.
+**API**: Demonstrates complete FFI lifecycle with Initialize, GetMetrics, ProxyTraceAgent, and Stop. Uses callback-based API directly with function pointers.
 
 Run (Unix UDS):
 
@@ -43,7 +51,7 @@ Build and run (module-less):
 
 go run examples/go/main.go
 
-**High-level API**: Package-level functions like `Get()`, `Post()`, etc. that return `(*Response, error)` and hide callback complexity.
+**API**: Complete FFI lifecycle demonstration with Initialize, GetMetrics, ProxyTraceAgent, and Stop. **High-level API**: Package-level functions like `Get()`, `Post()`, etc. that return `(*Response, error)` and hide callback complexity.
 
 Adjust the `#cgo` LDFLAGS in the source if using `--release` output or a different path.
 
@@ -51,7 +59,7 @@ Adjust the `#cgo` LDFLAGS in the source if using `--release` output or a differe
 
 Go (PureGo, no cgo) (examples/go-pure/main.go)
 
-Uses github.com/cloudflare/purego to dynamically load the shared library and call functions without cgo.
+Uses github.com/cloudflare/purego to dynamically load the shared library and call functions without cgo. Demonstrates complete FFI lifecycle with Initialize, GetMetrics, ProxyTraceAgent, and Stop.
 
 Run:
 
@@ -69,7 +77,7 @@ Run (add JNA to classpath):
 javac -cp jna-5.13.0.jar examples/java/JNAExample.java && \
 DYLD_LIBRARY_PATH=target/debug java -cp .:jna-5.13.0.jar examples.java.JNAExample
 
-**API**: Uses callback-based API with JNA Callback interfaces.
+**API**: Complete FFI lifecycle demonstration with Initialize, GetMetrics, ProxyTraceAgent, and Stop. Uses callback-based API with JNA Callback interfaces and Structure mapping.
 
 ---
 
@@ -80,7 +88,7 @@ Build as a console app (create a project or compile directly):
 dotnet new console -n UdsProxy && mv examples/dotnet/Program.cs UdsProxy/Program.cs && \
 dotnet run --project UdsProxy
 
-**High-level API**: `LibAgentClient` class provides async methods like `GetAsync()`, `PostAsync()`, etc. that return `Task<Response>`.
+**API**: Complete FFI lifecycle demonstration with Initialize, GetMetrics, ProxyTraceAgent, and Stop. **High-level API**: `LibAgentClient` class provides async methods like `GetAsync()`, `PostAsync()`, etc. that return `Task<Response>`.
 
 Ensure the loader can locate the native library (see prerequisites).
 
@@ -93,7 +101,7 @@ Install deps and run:
 npm install ffi-napi ref-napi && \
 DYLD_LIBRARY_PATH=target/debug node examples/js/index.js
 
-**Standard API**: `LibAgentClient` class provides promise-based methods that return Promises (synchronous FFI calls wrapped in promises).
+**API**: Complete FFI lifecycle demonstration with Initialize, GetMetrics, ProxyTraceAgent, and Stop. **Standard API**: `LibAgentClient` class provides promise-based methods that return Promises (synchronous FFI calls wrapped in promises).
 
 **Truly Async API**: `AsyncLibAgentClient` in `async-worker.js` uses worker threads for non-blocking FFI calls - run with:
 
@@ -107,7 +115,7 @@ Run:
 
 DYLD_LIBRARY_PATH=target/debug python3 examples/python/uds_proxy.py
 
-**API**: Uses callback-based API with ctypes function pointers.
+**API**: Complete FFI lifecycle demonstration with Initialize, GetMetrics, ProxyTraceAgent, and Stop. Uses callback-based API with ctypes function pointers and structure mapping.
 
 ---
 
@@ -118,4 +126,4 @@ Install ffi gem and run:
 gem install ffi && \
 DYLD_LIBRARY_PATH=target/debug ruby examples/ruby/uds_proxy.rb
 
-**API**: Uses callback-based API with FFI callback definitions.
+**API**: Complete FFI lifecycle demonstration with Initialize, GetMetrics, ProxyTraceAgent, and Stop. Uses callback-based API with FFI callback definitions and struct mapping.

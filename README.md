@@ -100,6 +100,12 @@ void on_error(const char* error_message, void* user_data) {
 int main(void) {
     Initialize();
 
+    // Get current metrics
+    struct MetricsData metrics = GetMetrics();
+    printf("Agent spawns: %llu\n", metrics.agent_spawns);
+    printf("GET requests: %llu\n", metrics.proxy_get_requests);
+    printf("Average response time: %.2f ms\n", metrics.response_time_ema_all);
+
     // Make a request using callbacks - no manual memory management!
     int32_t result = ProxyTraceAgent(
         "GET",                           // method
@@ -125,6 +131,11 @@ Callback API notes:
 - `headers`: string with lines `Name: Value` separated by `\n` or `\r\n`.
 - Callbacks receive data directly - no memory management required!
 - `on_error` callback may be `NULL` if error handling is not needed.
+
+Metrics API:
+- `GetMetrics()` returns a `MetricsData` struct with all current metrics values.
+- Provides direct access to process lifecycle metrics, HTTP proxy request/response counts, and response time moving averages.
+- Thread-safe and can be called at any time.
 
 Notes: The `Initialize` and `Stop` FFI functions return `void`. The `ProxyTraceAgent` function returns an `int32_t` error code (0 for success, negative for errors). Operational errors are logged; panics in Rust are caught with `catch_unwind` to avoid unwinding across the FFI boundary.
 

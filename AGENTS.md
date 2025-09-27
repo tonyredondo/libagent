@@ -66,5 +66,15 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 - See `include/libagent.h` for the callback function type definitions.
 - On unsupported platforms, the function returns an error.
 
+### Metrics FFI
+- New export: `GetMetrics()` returns a `MetricsData` struct containing comprehensive metrics.
+- `MetricsData` struct provides direct access to:
+  - Process lifecycle metrics (agent spawns, failures, uptime)
+  - HTTP proxy request counts by method (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS, OTHER)
+  - HTTP proxy response counts by status code range (2xx, 3xx, 4xx, 5xx)
+  - Response time moving averages (all, 2xx, 4xx, 5xx responses in milliseconds)
+- Thread-safe and returns a struct copy - no memory management required.
+- See `include/libagent.h` for the `MetricsData` struct definition.
+
 ## Platform Notes
 - Windows process management uses Job Objects for reliable termination of the child tree. For compatibility across `windows-sys` versions, `CreateJobObjectW` is declared via an `unsafe extern "system"` block; do not change its import path without verifying CI across OS/toolchains.
