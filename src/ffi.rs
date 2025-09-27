@@ -204,6 +204,8 @@ pub extern "C" fn ProxyTraceAgent(
                         "FFI ProxyTraceAgent: validation successful, method={}, path={}",
                         args.0, args.1
                     ));
+                    // Record proxy request metrics
+                    crate::metrics::get_metrics().record_proxy_request(&args.0);
                     args
                 }
                 Err(err_msg) => {
@@ -231,26 +233,35 @@ pub extern "C" fn ProxyTraceAgent(
             path,
             body.len()
         ));
-        let resp =
-            match perform_proxy_request_new(request_id, &method, &path, headers, &body, timeout) {
-                Ok(resp) => {
-                    log_debug(&format!(
-                        "FFI ProxyTraceAgent: received response with status={}",
-                        resp.status
-                    ));
-                    resp
+
+        // Start timing the request
+        let request_start = std::time::Instant::now();
+
+        let resp = match perform_proxy_request_new(
+            request_id, &method, &path, headers, &body, timeout,
+        ) {
+            Ok(resp) => {
+                let response_time = request_start.elapsed();
+                log_debug(&format!(
+                    "FFI ProxyTraceAgent: received response with status={}, response_time={:.2}ms",
+                    resp.status,
+                    response_time.as_secs_f64() * 1000.0
+                ));
+                // Record proxy response metrics
+                crate::metrics::get_metrics().record_proxy_response(resp.status, response_time);
+                resp
+            }
+            Err(err_msg) => {
+                log_debug(&format!("FFI ProxyTraceAgent: request failed: {}", err_msg));
+                if !on_error.is_null() {
+                    let on_error_fn: ErrorCallback = unsafe { std::mem::transmute(on_error) };
+                    let c_err =
+                        CString::new(err_msg).unwrap_or_else(|_| CString::new("error").unwrap());
+                    on_error_fn(c_err.as_ptr(), user_data);
                 }
-                Err(err_msg) => {
-                    log_debug(&format!("FFI ProxyTraceAgent: request failed: {}", err_msg));
-                    if !on_error.is_null() {
-                        let on_error_fn: ErrorCallback = unsafe { std::mem::transmute(on_error) };
-                        let c_err = CString::new(err_msg)
-                            .unwrap_or_else(|_| CString::new("error").unwrap());
-                        on_error_fn(c_err.as_ptr(), user_data);
-                    }
-                    return -2;
-                }
-            };
+                return -2;
+            }
+        };
 
         // call the response callback
         if !on_response.is_null() {

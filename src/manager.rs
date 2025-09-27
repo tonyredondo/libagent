@@ -1063,6 +1063,14 @@ impl AgentManager {
             let mut t = lock_mutex(&self.trace_child);
             Self::graceful_kill(self.trace_spec.name, &mut t);
         }
+
+        // Log final metrics if debug logging is enabled
+        if is_debug_enabled() {
+            log_debug(&format!(
+                "Final metrics summary:\n{}",
+                crate::metrics::get_metrics().format_metrics()
+            ));
+        }
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]
