@@ -19,10 +19,29 @@ use crate::config::get_trace_agent_pipe_name;
 #[cfg(unix)]
 use crate::config::get_trace_agent_uds_path;
 use crate::config::{
-    get_backoff_initial_secs, get_backoff_max_secs, get_monitor_interval_secs, is_agent_enabled,
+    get_agent_remote_config_addr, get_backoff_initial_secs, get_backoff_max_secs,
+    get_monitor_interval_secs, is_agent_enabled,
 };
 use crate::logging::{log_debug, log_error, log_warn};
+use crate::metrics;
 use crate::process::ProcessSpec;
+use std::net::{TcpStream, ToSocketAddrs};
+
+fn record_process_spawn(spec: &ProcessSpec) {
+    match spec.name {
+        "agent" => metrics::get_metrics().record_agent_spawn(),
+        "trace-agent" => metrics::get_metrics().record_trace_agent_spawn(),
+        _ => {}
+    }
+}
+
+fn record_process_failure(spec: &ProcessSpec) {
+    match spec.name {
+        "agent" => metrics::get_metrics().record_agent_failure(),
+        "trace-agent" => metrics::get_metrics().record_trace_agent_failure(),
+        _ => {}
+    }
+}
 
 /// Checks if a Unix Domain Socket is already in use by trying to connect to it.
 /// Returns true if the socket exists and accepts connections (another process is listening).
@@ -84,23 +103,55 @@ fn is_remote_config_available() -> bool {
         return false;
     }
 
-    use std::net::TcpStream;
     use std::time::Duration;
 
-    // Check if we can connect to the default agent gRPC port
-    match TcpStream::connect_timeout(
-        &"127.0.0.1:5001".parse().unwrap(),
-        Duration::from_millis(100),
-    ) {
-        Ok(_) => {
-            log_debug("Remote configuration service is available on existing agent");
-            true
+    let Some(addr) = get_agent_remote_config_addr() else {
+        log_debug("Remote configuration detection disabled via LIBAGENT_AGENT_REMOTE_CONFIG_ADDR");
+        return false;
+    };
+
+    let addrs = match addr.to_socket_addrs() {
+        Ok(addrs) => addrs.collect::<Vec<_>>(),
+        Err(err) => {
+            log_warn(&format!(
+                "Failed to resolve remote configuration address '{}': {}",
+                addr, err
+            ));
+            return false;
         }
-        Err(_) => {
-            log_debug("Remote configuration service not available, will spawn our own agent");
-            false
+    };
+
+    if addrs.is_empty() {
+        log_warn(&format!(
+            "Remote configuration address '{}' resolved to no endpoints",
+            addr
+        ));
+        return false;
+    }
+
+    for socket_addr in addrs {
+        match TcpStream::connect_timeout(&socket_addr, Duration::from_millis(100)) {
+            Ok(_) => {
+                log_debug(&format!(
+                    "Remote configuration service detected at {}",
+                    socket_addr
+                ));
+                return true;
+            }
+            Err(err) => {
+                log_debug(&format!(
+                    "Remote configuration probe failed for {}: {}",
+                    socket_addr, err
+                ));
+            }
         }
     }
+
+    log_debug(&format!(
+        "Remote configuration service not reachable at {}; will spawn our own agent",
+        addr
+    ));
+    false
 }
 
 /// Ensures the child described by `spec` is running. If it has exited or was never started,
@@ -123,12 +174,17 @@ fn is_remote_config_available() -> bool {
 /// - Initial delay: `BACKOFF_INITIAL_SECS` (1 second)
 /// - Exponential growth: doubles each failure up to `BACKOFF_MAX_SECS` (30 seconds)
 /// - Resets to initial delay on successful spawn
+///
+/// # Returns
+/// Returns `true` if a trace-agent was successfully spawned, `false` otherwise.
+/// This allows the caller to reset readiness state when a new trace-agent instance starts.
 pub fn tick_process(
     child_guard: &mut Option<std::process::Child>,
     spec: &ProcessSpec,
     backoff_secs_guard: &mut u64,
     next_attempt_guard: &mut Option<Instant>,
-) {
+    spawn_fn: &dyn Fn(&ProcessSpec) -> std::io::Result<std::process::Child>,
+) -> bool {
     // If child exists, see if it exited
     if let Some(child) = child_guard.as_mut() {
         match child.try_wait() {
@@ -137,16 +193,18 @@ pub fn tick_process(
                     "{} exited with status {:?}. Will respawn.",
                     spec.name, status
                 ));
+                record_process_failure(spec);
                 *child_guard = None;
             }
             Ok(None) => {
-                return; // still running
+                return false; // still running
             }
             Err(err) => {
                 log_warn(&format!(
                     "Failed to check {} status: {}. Treating as not running.",
                     spec.name, err
                 ));
+                record_process_failure(spec);
                 *child_guard = None;
             }
         }
@@ -155,7 +213,7 @@ pub fn tick_process(
     // Not running; check backoff window
     let now = Instant::now();
     if next_attempt_guard.as_ref().is_some_and(|&next| now < next) {
-        return;
+        return false;
     }
 
     // Check if we should spawn based on resource availability
@@ -168,7 +226,7 @@ pub fn tick_process(
                     log_debug(
                         "Skipping trace-agent spawn - socket already in use by another process",
                     );
-                    return;
+                    return false;
                 }
             }
             #[cfg(windows)]
@@ -178,7 +236,7 @@ pub fn tick_process(
                     log_debug(
                         "Skipping trace-agent spawn - pipe already in use by another process",
                     );
-                    return;
+                    return false;
                 }
             }
         }
@@ -187,29 +245,35 @@ pub fn tick_process(
                 log_debug(
                     "Skipping agent spawn - remote configuration service already available from existing agent",
                 );
-                return;
+                return false;
             }
         }
         _ => {}
     }
 
     // Try to spawn
-    match crate::process::spawn_process(spec) {
+    match spawn_fn(spec) {
         Ok(new_child) => {
             *child_guard = Some(new_child);
             *backoff_secs_guard = get_backoff_initial_secs();
             *next_attempt_guard = None;
+            record_process_spawn(spec);
+
+            // Return true if this is a trace-agent spawn
+            spec.name == "trace-agent"
         }
         Err(err) => {
             log_error(&format!(
                 "Failed to spawn {} (program='{}', args={:?}): {}. Backing off {}s.",
                 spec.name, spec.program, spec.args, err, *backoff_secs_guard
             ));
+            record_process_failure(spec);
             let wait = Duration::from_secs(*backoff_secs_guard);
             *next_attempt_guard = Some(now + wait);
             *backoff_secs_guard = (*backoff_secs_guard)
                 .saturating_mul(2)
                 .min(get_backoff_max_secs());
+            false
         }
     }
 }
@@ -241,6 +305,7 @@ pub fn start_monitor_thread(manager: Arc<crate::manager::AgentManager>) -> JoinH
 fn monitor_loop(manager: &crate::manager::AgentManager) {
     log_debug("Monitor thread started.");
     let interval = Duration::from_secs(get_monitor_interval_secs());
+    let spawn_fn = |spec: &ProcessSpec| manager.spawn_process(spec);
     while manager.should_run.load(Ordering::SeqCst) {
         // Check and (re)spawn processes if needed
         {
@@ -249,11 +314,12 @@ fn monitor_loop(manager: &crate::manager::AgentManager) {
             let mut agent_next = manager.agent_next_attempt.lock().unwrap();
 
             if let Some(ref agent_spec) = manager.agent_spec {
-                tick_process(
+                let _trace_agent_spawned = tick_process(
                     &mut agent_child,
                     agent_spec,
                     &mut agent_backoff,
                     &mut agent_next,
+                    &spawn_fn,
                 );
             }
         }
@@ -263,12 +329,18 @@ fn monitor_loop(manager: &crate::manager::AgentManager) {
             let mut trace_backoff = manager.trace_backoff_secs.lock().unwrap();
             let mut trace_next = manager.trace_next_attempt.lock().unwrap();
 
-            tick_process(
+            let trace_agent_spawned = tick_process(
                 &mut trace_child,
                 &manager.trace_spec,
                 &mut trace_backoff,
                 &mut trace_next,
+                &spawn_fn,
             );
+
+            // Reset trace-agent readiness if we spawned a new instance
+            if trace_agent_spawned {
+                manager.reset_trace_agent_readiness();
+            }
         }
 
         // Compute dynamic sleep until next try based on backoff timers
@@ -341,6 +413,18 @@ mod tests {
         };
         let _listener = listener;
 
+        if !super::is_socket_in_use(&socket_path) {
+            eprintln!(
+                "Skipping test_tick_process_respects_uds_override_conflict: cannot connect to {}",
+                socket_path.display()
+            );
+            unsafe {
+                std::env::remove_var("LIBAGENT_TRACE_AGENT_UDS");
+            }
+            let _ = std::fs::remove_file(&socket_path);
+            return;
+        }
+
         let spec = crate::process::ProcessSpec::new(
             "trace-agent",
             "nonexistent-binary".to_string(),
@@ -351,7 +435,33 @@ mod tests {
         let mut backoff = super::get_backoff_initial_secs();
         let mut next_attempt = None;
 
-        super::tick_process(&mut child_guard, &spec, &mut backoff, &mut next_attempt);
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let spawn_called = Arc::new(AtomicBool::new(false));
+        let spawn_fn = {
+            let spawn_called = Arc::clone(&spawn_called);
+            move |_: &crate::process::ProcessSpec| -> std::io::Result<std::process::Child> {
+                spawn_called.store(true, Ordering::SeqCst);
+                Err(std::io::Error::other(
+                    "spawn should not occur when socket is already in use",
+                ))
+            }
+        };
+        let result = super::tick_process(
+            &mut child_guard,
+            &spec,
+            &mut backoff,
+            &mut next_attempt,
+            &spawn_fn,
+        );
+
+        assert!(
+            !spawn_called.load(Ordering::SeqCst),
+            "spawn should not occur when socket is already in use"
+        );
+        assert!(!result, "tick_process should indicate no spawn occurred");
 
         assert!(
             child_guard.is_none(),

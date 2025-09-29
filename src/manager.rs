@@ -11,6 +11,8 @@
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 use std::process::Child;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
@@ -39,6 +41,15 @@ use crate::process::ProcessSpec;
 use crate::shutdown;
 #[cfg(windows)]
 use crate::winpipe;
+
+#[cfg(windows)]
+fn normalize_pipe_path(pipe_name: &str) -> String {
+    if pipe_name.starts_with(r"\\.\pipe\") {
+        pipe_name.to_string()
+    } else {
+        format!(r"\\.\pipe\{}", pipe_name)
+    }
+}
 
 /// Helper function to lock a mutex while handling potential poisoning.
 /// If the mutex is poisoned (due to a panic in another thread), we recover
@@ -90,6 +101,9 @@ pub struct AgentManager {
 impl AgentManager {
     /// Creates a new manager with default `ProcessSpec`s based on constants.
     fn new() -> Self {
+        #[cfg(test)]
+        MANAGER_CREATION_COUNT.fetch_add(1, Ordering::SeqCst);
+
         // Note: On Unix, child processes are placed in their own process groups using setsid().
         // This provides good isolation, but if the parent application is killed forcefully (SIGKILL),
         // the child processes may become orphaned. On Linux, PDEATHSIG prevents this.
@@ -171,12 +185,14 @@ impl AgentManager {
             log_debug("Manager: waiting for trace-agent named pipe to be ready");
             let start_time = std::time::Instant::now();
 
+            let pipe_path = normalize_pipe_path(&pipe_name);
+
             while start_time.elapsed() < timeout {
                 // Try to open the pipe
                 if std::fs::OpenOptions::new()
                     .read(true)
                     .write(true)
-                    .open(format!(r"\\.\pipe\{}", pipe_name))
+                    .open(&pipe_path)
                     .is_ok()
                 {
                     log_debug("Manager: trace-agent named pipe is ready");
@@ -195,6 +211,24 @@ impl AgentManager {
             // For unsupported platforms, assume ready
             true
         }
+    }
+
+    /// Reset the trace-agent readiness flag.
+    /// Called when a new trace-agent instance is spawned.
+    pub(crate) fn reset_trace_agent_readiness(&self) {
+        *lock_mutex(&self.trace_agent_ready) = false;
+    }
+
+    /// Get the current trace-agent readiness state (for testing).
+    #[cfg(test)]
+    pub(crate) fn is_trace_agent_ready(&self) -> bool {
+        *lock_mutex(&self.trace_agent_ready)
+    }
+
+    /// Set the trace-agent readiness flag (for testing).
+    #[cfg(test)]
+    pub(crate) fn set_trace_agent_ready_for_test(&self, value: bool) {
+        *lock_mutex(&self.trace_agent_ready) = value;
     }
 
     /// Ensure the trace-agent is ready to accept connections.
@@ -246,8 +280,8 @@ impl AgentManager {
     /// Spawns a subprocess according to the provided spec.
     ///
     /// Delegates to the process module for platform-specific spawning logic.
-    #[allow(dead_code)] // Used internally by tick_process but not directly tested
-    fn spawn_process(&self, spec: &ProcessSpec) -> std::io::Result<Child> {
+    #[allow(dead_code)]
+    pub(crate) fn spawn_process(&self, spec: &ProcessSpec) -> std::io::Result<Child> {
         let child = crate::process::spawn_process(spec)?;
 
         // On Windows, assign child to Job object so we can terminate whole tree later
@@ -256,16 +290,9 @@ impl AgentManager {
             self.assign_child_to_job(&child);
         }
 
-        // Record metrics
-        match spec.name {
-            "agent" => metrics::get_metrics().record_agent_spawn(),
-            "trace-agent" => metrics::get_metrics().record_trace_agent_spawn(),
-            _ => {} // Unknown process type, don't record
-        }
-
         // For trace-agent, reset the readiness flag since we spawned a new instance
         if spec.name == "trace-agent" {
-            *lock_mutex(&self.trace_agent_ready) = false;
+            self.reset_trace_agent_readiness();
         }
 
         Ok(child)
@@ -340,11 +367,30 @@ impl AgentManager {
         backoff_secs_guard: &mut u64,
         next_attempt_guard: &mut Option<Instant>,
     ) {
-        monitor::tick_process(child_guard, spec, backoff_secs_guard, next_attempt_guard);
+        let spawn_fn = |spec_to_spawn: &ProcessSpec| self.spawn_process(spec_to_spawn);
+        let trace_agent_spawned = monitor::tick_process(
+            child_guard,
+            spec,
+            backoff_secs_guard,
+            next_attempt_guard,
+            &spawn_fn,
+        );
+
+        // Reset trace-agent readiness if we spawned a new instance
+        if trace_agent_spawned {
+            self.reset_trace_agent_readiness();
+        }
     }
 
     /// Starts both child processes (if not already started) and launches the monitor thread.
-    fn start(&self) {
+    fn reset_backoff_state(&self) {
+        *lock_mutex(&self.agent_backoff_secs) = get_backoff_initial_secs();
+        *lock_mutex(&self.agent_next_attempt) = None;
+        *lock_mutex(&self.trace_backoff_secs) = get_backoff_initial_secs();
+        *lock_mutex(&self.trace_next_attempt) = None;
+    }
+
+    fn start(self: &Arc<Self>) {
         let _guard = lock_mutex(&self.start_stop_lock);
         if self.should_run.swap(true, Ordering::SeqCst) {
             // Already running
@@ -354,6 +400,10 @@ impl AgentManager {
 
         // Record initialization metrics
         metrics::get_metrics().record_initialization();
+
+        // Reset backoff so new session starts immediately
+        self.reset_backoff_state();
+        self.reset_trace_agent_readiness();
 
         let agent_enabled = self.agent_spec.is_some();
         if agent_enabled {
@@ -386,14 +436,14 @@ impl AgentManager {
         // Start monitor thread
         let mut monitor_guard = lock_mutex(&self.monitor_thread);
         if monitor_guard.is_none() {
-            let this = Arc::clone(get_manager());
+            let this = Arc::clone(self);
             let handle = monitor::start_monitor_thread(this);
             *monitor_guard = Some(handle);
         }
     }
 
     /// Stops the monitor thread and terminates both child processes.
-    fn stop(&self) {
+    fn stop(self: &Arc<Self>) {
         let _guard = lock_mutex(&self.start_stop_lock);
         if !self.should_run.swap(false, Ordering::SeqCst) {
             // Already stopped
@@ -449,6 +499,13 @@ impl AgentManager {
                 crate::metrics::get_metrics().format_metrics()
             ));
         }
+
+        // Reset uptime so the next initialize() call represents a fresh session
+        crate::metrics::get_metrics().clear_initialization();
+
+        // Prepare for a future restart by clearing readiness/backoff state
+        self.reset_trace_agent_readiness();
+        self.reset_backoff_state();
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]
@@ -496,6 +553,7 @@ impl AgentManager {
             -1 => {
                 // Fork failed
                 log_warn("Failed to fork orphan cleanup monitor process");
+                Self::clear_orphan_monitor_env();
             }
             0 => {
                 // Child process (monitor) - read PIDs from environment
@@ -510,6 +568,7 @@ impl AgentManager {
                     .and_then(|s| s.parse::<u32>().ok())
                     .unwrap_or(1); // fallback to init
 
+                Self::clear_orphan_monitor_env();
                 self.run_orphan_monitor(parent_pid, agent_pid, trace_pid);
                 // Monitor process exits after cleanup
                 unsafe { libc::_exit(0) };
@@ -517,6 +576,7 @@ impl AgentManager {
             _ => {
                 // Parent process - monitor process is now running independently
                 log_debug("Forked orphan cleanup monitor process");
+                Self::clear_orphan_monitor_env();
             }
         }
     }
@@ -555,22 +615,60 @@ impl AgentManager {
             }
         }
     }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn clear_orphan_monitor_env() {
+        const KEYS: [&str; 3] = [
+            "LIBAGENT_MONITOR_AGENT_PID",
+            "LIBAGENT_MONITOR_TRACE_PID",
+            "LIBAGENT_MONITOR_PARENT_PID",
+        ];
+
+        unsafe {
+            for key in KEYS {
+                if let Ok(c_key) = std::ffi::CString::new(key) {
+                    libc::unsetenv(c_key.as_ptr());
+                }
+            }
+        }
+    }
 }
 
 // removed unsafe arg caching; ProcessSpec now owns program and args
 
-/// Global singleton manager used by both Rust and FFI front-ends.
-static GLOBAL_MANAGER: OnceLock<Arc<AgentManager>> = OnceLock::new();
+/// Global singleton manager guard used by both Rust and FFI front-ends.
+static GLOBAL_MANAGER: OnceLock<Mutex<Arc<AgentManager>>> = OnceLock::new();
 
-pub fn get_manager() -> &'static Arc<AgentManager> {
-    GLOBAL_MANAGER.get_or_init(|| Arc::new(AgentManager::new()))
+#[cfg(test)]
+static MANAGER_CREATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+fn manager_cell() -> &'static Mutex<Arc<AgentManager>> {
+    GLOBAL_MANAGER.get_or_init(|| Mutex::new(Arc::new(AgentManager::new())))
+}
+
+pub fn get_manager() -> Arc<AgentManager> {
+    manager_cell()
+        .lock()
+        .expect("manager lock poisoned")
+        .clone()
 }
 
 /// Initializes the libagent runtime: starts the Agent and Trace Agent and
 /// launches the monitor task. Safe to call multiple times (idempotent).
 pub fn initialize() {
-    let mgr = Arc::clone(get_manager());
-    mgr.start();
+    let cell = manager_cell();
+    let mut guard = cell.lock().expect("manager lock poisoned");
+    if guard.should_run.load(Ordering::SeqCst) {
+        return;
+    }
+
+    let new_manager = Arc::new(AgentManager::new());
+    let manager_for_start = Arc::clone(&new_manager);
+    *guard = new_manager;
+
+    // Ensure should_run is set under the global manager lock to keep
+    // initialize() idempotent even when invoked concurrently.
+    manager_for_start.start();
 }
 
 /// Stops the monitor task and terminates both child processes. Safe to call
@@ -582,8 +680,9 @@ pub fn stop() {
         winpipe::shutdown_worker_pool();
     }
 
-    if let Some(mgr) = GLOBAL_MANAGER.get() {
-        mgr.stop();
+    if let Some(cell) = GLOBAL_MANAGER.get() {
+        let manager = cell.lock().expect("manager lock poisoned").clone();
+        manager.stop();
     }
 }
 
@@ -592,10 +691,12 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::env;
+    use std::sync::Arc;
+    use std::sync::Barrier;
     #[cfg(unix)]
     use std::sync::Mutex;
-    #[cfg(unix)]
-    use std::time::Duration;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn test_is_debug_enabled_default() {
@@ -679,6 +780,65 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    fn test_initialize_concurrent_creates_single_manager() {
+        crate::manager::stop();
+        MANAGER_CREATION_COUNT.store(0, Ordering::SeqCst);
+        let baseline = MANAGER_CREATION_COUNT.load(Ordering::SeqCst);
+
+        let original_program = env::var("LIBAGENT_TRACE_AGENT_PROGRAM").ok();
+        let original_agent_enabled = env::var("LIBAGENT_AGENT_ENABLED").ok();
+
+        unsafe {
+            env::set_var("LIBAGENT_AGENT_ENABLED", "0");
+            env::set_var(
+                "LIBAGENT_TRACE_AGENT_PROGRAM",
+                "libagent-concurrent-test-binary-does-not-exist",
+            );
+        }
+
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let barrier_clone = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier_clone.wait();
+                crate::manager::initialize();
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("initialize thread panicked");
+        }
+
+        crate::manager::stop();
+
+        let final_count = MANAGER_CREATION_COUNT.load(Ordering::SeqCst);
+        let created = final_count.saturating_sub(baseline);
+        assert!(
+            (1..=3).contains(&created),
+            "expected between 1 and 3 manager constructions, saw {}",
+            created
+        );
+
+        match original_program {
+            Some(val) => unsafe {
+                env::set_var("LIBAGENT_TRACE_AGENT_PROGRAM", val);
+            },
+            None => unsafe {
+                env::remove_var("LIBAGENT_TRACE_AGENT_PROGRAM");
+            },
+        }
+        match original_agent_enabled {
+            Some(val) => unsafe {
+                env::set_var("LIBAGENT_AGENT_ENABLED", val);
+            },
+            None => unsafe {
+                env::remove_var("LIBAGENT_AGENT_ENABLED");
+            },
+        }
+    }
+
+    #[test]
     fn test_log_functions() {
         // Test that log functions don't crash
         crate::logging::log_error("test error");
@@ -695,6 +855,24 @@ mod tests {
         let handle = manager.windows_job_handle();
         // Handle might be null if CreateJobObjectW fails, but function should not crash
         let _ = handle;
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_normalize_pipe_path_prefixed() {
+        assert_eq!(
+            super::normalize_pipe_path(r"\\.\pipe\already-prefixed"),
+            r"\\.\pipe\already-prefixed"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_normalize_pipe_path_unprefixed() {
+        assert_eq!(
+            super::normalize_pipe_path("unprefixed"),
+            r"\\.\pipe\unprefixed"
+        );
     }
 
     #[cfg(windows)]

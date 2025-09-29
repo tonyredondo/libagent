@@ -60,6 +60,7 @@ const ENV_AGENT_ENABLED: &str = "LIBAGENT_AGENT_ENABLED";
 const ENV_TRACE_AGENT_PROGRAM: &str = "LIBAGENT_TRACE_AGENT_PROGRAM";
 const ENV_TRACE_AGENT_ARGS: &str = "LIBAGENT_TRACE_AGENT_ARGS";
 const ENV_MONITOR_INTERVAL_SECS: &str = "LIBAGENT_MONITOR_INTERVAL_SECS";
+const ENV_AGENT_REMOTE_CONFIG_ADDR: &str = "LIBAGENT_AGENT_REMOTE_CONFIG_ADDR";
 #[cfg(unix)]
 const ENV_TRACE_AGENT_UDS: &str = "LIBAGENT_TRACE_AGENT_UDS";
 #[cfg(windows)]
@@ -107,6 +108,38 @@ pub fn get_trace_agent_args() -> Vec<String> {
             }
         },
         Err(_) => TRACE_AGENT_ARGS.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+/// Returns the remote configuration address used to detect existing agents.
+///
+/// By default returns `Some("127.0.0.1:5001")`. Setting
+/// `LIBAGENT_AGENT_REMOTE_CONFIG_ADDR` to an alternate host:port changes the
+/// detection target. Setting it to an empty or falsey value disables the probe.
+pub fn get_agent_remote_config_addr() -> Option<String> {
+    match std::env::var(ENV_AGENT_REMOTE_CONFIG_ADDR) {
+        Ok(val) => {
+            let trimmed = val.trim();
+            let normalized = trimmed.to_ascii_lowercase();
+            if trimmed.is_empty()
+                || matches!(
+                    normalized.as_str(),
+                    "0" | "false" | "off" | "no" | "disabled"
+                )
+            {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Err(std::env::VarError::NotUnicode(_)) => {
+            eprintln!(
+                "[libagent] WARN: {} contains non-unicode data; disabling remote config detection",
+                ENV_AGENT_REMOTE_CONFIG_ADDR
+            );
+            None
+        }
+        Err(std::env::VarError::NotPresent) => Some("127.0.0.1:5001".to_string()),
     }
 }
 
@@ -207,6 +240,7 @@ mod tests {
     use serial_test::serial;
 
     #[test]
+    #[serial]
     fn test_get_agent_program_default() {
         // Clean up any environment variables from previous tests
         unsafe {
@@ -231,6 +265,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_get_agent_args_default() {
         // Clean up any environment variables from previous tests
         unsafe {
@@ -279,6 +314,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_get_trace_agent_program_default() {
         // Clean up any environment variables from previous tests
         unsafe {
@@ -552,6 +588,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_is_agent_enabled_default() {
         // Clean up any environment variables from previous tests
         unsafe {
@@ -606,6 +643,47 @@ mod tests {
         assert!(!is_agent_enabled());
         unsafe {
             std::env::remove_var(ENV_AGENT_ENABLED);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_agent_remote_config_addr_default() {
+        unsafe {
+            std::env::remove_var(ENV_AGENT_REMOTE_CONFIG_ADDR);
+        }
+
+        let addr = get_agent_remote_config_addr();
+        assert_eq!(addr.as_deref(), Some("127.0.0.1:5001"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_agent_remote_config_addr_override() {
+        unsafe {
+            std::env::set_var(ENV_AGENT_REMOTE_CONFIG_ADDR, "localhost:6001");
+        }
+
+        let addr = get_agent_remote_config_addr();
+        assert_eq!(addr.as_deref(), Some("localhost:6001"));
+
+        unsafe {
+            std::env::remove_var(ENV_AGENT_REMOTE_CONFIG_ADDR);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_agent_remote_config_addr_disable() {
+        unsafe {
+            std::env::set_var(ENV_AGENT_REMOTE_CONFIG_ADDR, "off");
+        }
+
+        let addr = get_agent_remote_config_addr();
+        assert!(addr.is_none());
+
+        unsafe {
+            std::env::remove_var(ENV_AGENT_REMOTE_CONFIG_ADDR);
         }
     }
 }

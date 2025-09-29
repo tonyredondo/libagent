@@ -21,10 +21,10 @@ This document explains how libagent is structured, how it manages the Agent and 
 - Configuration: `src/config.rs` contains defaults and environment variable overrides (parsed with shell-words).
 - FFI: `src/ffi.rs` exposes `Initialize`, `Stop`, `GetMetrics`, and the transport-agnostic trace-agent proxy; see `include/libagent.h`.
 - UDS HTTP client: `src/uds.rs` implements a minimal HTTP/1.1 client over Unix Domain Sockets used by the proxy.
-- Windows Named Pipe client: `src/winpipe.rs` implements HTTP/1.1 over Windows Named Pipes used by the proxy.
+- Windows Named Pipe client: `src/winpipe.rs` implements HTTP/1.1 over Windows Named Pipes using overlapped I/O with explicit cancellation to honour per-request timeouts.
 
 ## Lifecycle
-1. Initialize: `initialize()` sets up a singleton `AgentManager` and attempts to start both processes (subject to smart spawning logic), then launches a monitor thread.
+1. Initialize: `initialize()` sets up a singleton `AgentManager` in a global cell. The global lock is held through the initial `start()` so concurrent callers all share the same manager instance, then the monitor thread is launched.
 2. Smart Spawning: Before spawning processes, checks are performed:
    - Trace Agent: Only spawns if IPC endpoint (UDS socket/Named Pipe) is available (no conflicts with existing processes).
    - Agent: Only spawns if enabled AND no existing remote configuration service is detected on `localhost:5001`.
@@ -182,7 +182,7 @@ If the parent application is killed forcefully (SIGKILL, crash, etc.):
 - On Unix, avoid sending SIGKILL to your application - use SIGTERM for clean shutdown
 
 ## Idempotency and Safety
-- `initialize()` and `stop()` are idempotent.
+- `initialize()` and `stop()` are idempotent; `initialize()` is safe to invoke concurrently and only the first caller will perform the actual startup work.
 - FFI functions catch panics with `catch_unwind` to prevent unwinding across the FFI boundary.
 - Process ownership safety: Only terminates processes that libagent spawned (respects external processes).
 - Resource conflict prevention: Smart spawning prevents multiple instances from competing for IPC resources.
@@ -198,6 +198,7 @@ If the parent application is killed forcefully (SIGKILL, crash, etc.):
 - Path resolution:
   - Unix: UDS socket via `LIBAGENT_TRACE_AGENT_UDS` (default `/tmp/datadog_libagent.socket`).
   - Windows: Named pipe via `LIBAGENT_TRACE_AGENT_PIPE` (default `datadog-libagent`, full `\\.\\pipe\\datadog-libagent`).
+- Timeout enforcement: Unix uses socket timeouts; Windows uses overlapped I/O with `CancelIoEx` to abort stalled operations.
 - These values are shared with the spawner and monitor, guaranteeing proxy requests target the same IPC endpoint that the managed trace-agent instance uses.
 - Timeout: 50 seconds for both Unix UDS and Windows Named Pipe connections.
 - Request shape: headers are a single string with lines `Name: Value` separated by `\n` or `\r\n`; body is an optional byte slice.

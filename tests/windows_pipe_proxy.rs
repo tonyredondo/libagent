@@ -237,6 +237,126 @@ fn windows_pipe_proxy_basic() {
 
 #[test]
 #[serial]
+fn windows_pipe_proxy_basic_prefixed_env() {
+    force_link_lib();
+    // Unique pipe name
+    let pipe_name = format!("libagent_test_pipe_prefixed_{}", std::process::id());
+    let full_path = format!(r"\\.\pipe\{}", pipe_name);
+    let wpath = to_wide(&full_path);
+
+    // Create server
+    let handle: HANDLE = unsafe {
+        CreateNamedPipeW(
+            wpath.as_ptr(),
+            PIPE_ACCESS_DUPLEX_CONST | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE,
+            1, // max instances
+            65536,
+            65536,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        eprintln!("skipping windows_pipe_proxy_basic_prefixed_env: cannot create pipe");
+        return;
+    }
+
+    // Spawn acceptor thread
+    let handle_val = handle as isize;
+    let th = thread::spawn(move || {
+        let handle = handle_val as HANDLE;
+        let ok = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
+        if ok == 0 {
+            unsafe { CloseHandle(handle) };
+            return;
+        }
+        // Wrap handle as File
+        let mut file = unsafe { std::fs::File::from_raw_handle(handle) };
+        // Read until headers end
+        let mut buf = [0u8; 8192];
+        let mut read_total = 0usize;
+        loop {
+            let n = file.read(&mut buf[read_total..]).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            read_total += n;
+            if read_total >= 4 && buf[..read_total].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+            if read_total == buf.len() {
+                break;
+            }
+        }
+        // Respond
+        let _ = write!(file, "HTTP/1.1 200 OK\r\n");
+        let _ = write!(
+            file,
+            "Content-Type: text/plain\r\nX-Server: pipe-test-prefixed\r\n"
+        );
+        let body = b"pipe response prefixed";
+        let _ = write!(file, "Content-Length: {}\r\n\r\n", body.len());
+        let _ = file.write_all(body);
+        // File drops and closes the handle
+    });
+
+    // Configure env var for pipe name using full prefixed path
+    unsafe {
+        env::set_var("LIBAGENT_TRACE_AGENT_PIPE", &full_path);
+    }
+
+    // Call FFI with callbacks
+    let method = CString::new("GET").unwrap();
+    let path = CString::new("/info").unwrap();
+    let headers = CString::new("Accept: */*\n").unwrap();
+
+    // Prepare result storage
+    let mut result = TestResult::new();
+    let result_ptr = &mut result as *mut TestResult as *mut ::std::os::raw::c_void;
+
+    let rc = unsafe {
+        ProxyTraceAgent(
+            method.as_ptr(),
+            path.as_ptr(),
+            headers.as_ptr(),
+            ptr::null(),
+            0,
+            test_response_callback,
+            test_error_callback,
+            result_ptr,
+        )
+    };
+
+    if rc != 0 {
+        eprintln!(
+            "skipping windows_pipe_proxy_basic_prefixed_env: rc={}, err={:?}",
+            rc, result.error
+        );
+        let _ = th.join();
+        return;
+    }
+
+    assert_eq!(result.status, Some(200));
+    let headers_vec = result.headers.as_ref().expect("headers should be set");
+    let headers_str = String::from_utf8_lossy(headers_vec);
+    assert!(
+        headers_str.contains("X-Server: pipe-test-prefixed"),
+        "headers: {}",
+        headers_str
+    );
+    let body_vec = result.body.as_ref().expect("body should be set");
+    assert_eq!(body_vec, &b"pipe response prefixed".to_vec());
+    let _ = th.join();
+
+    // Clean up environment variable
+    unsafe {
+        env::remove_var("LIBAGENT_TRACE_AGENT_PIPE");
+    }
+}
+
+#[test]
+#[serial]
 fn windows_pipe_proxy_chunked() {
     force_link_lib();
     // Unique pipe name

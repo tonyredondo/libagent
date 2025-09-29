@@ -4,29 +4,14 @@
 //! configuring them for IPC-only operation, and managing process lifecycle.
 
 #[cfg(target_os = "linux")]
-const PR_SET_PDEATHSIG: libc::c_int = 1; // prctl option for parent death signal
+fn set_parent_death_signal(signal: libc::c_int) -> std::io::Result<()> {
+    // SAFETY: `prctl` is invoked with the expected arguments for PR_SET_PDEATHSIG.
+    let result = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, signal as libc::c_ulong, 0, 0, 0) };
 
-#[cfg(target_os = "linux")]
-const SYS_PRCTL: libc::c_int = 157; // x86_64 prctl syscall
-
-#[cfg(target_os = "linux")]
-unsafe fn prctl_syscall(
-    option: libc::c_int,
-    arg2: libc::c_ulong,
-    arg3: libc::c_ulong,
-    arg4: libc::c_ulong,
-    arg5: libc::c_ulong,
-) -> libc::c_int {
-    // SAFETY: syscall is unsafe but we're calling it correctly for prctl
-    unsafe {
-        libc::syscall(
-            SYS_PRCTL as libc::c_long,
-            option as libc::c_long,
-            arg2 as libc::c_long,
-            arg3 as libc::c_long,
-            arg4 as libc::c_long,
-            arg5 as libc::c_long,
-        ) as libc::c_int
+    if result == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -129,10 +114,12 @@ pub fn configure_unix_process(cmd: &mut Command) {
             // This ensures no orphaned processes even when parent is killed forcefully
             // SAFETY: prctl syscall is called correctly here
             #[cfg(target_os = "linux")]
-            if prctl_syscall(PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong, 0, 0, 0) == -1 {
-                // If setting PDEATHSIG fails, log but continue
-                // Process groups will still provide some cleanup
-                eprintln!("Warning: Failed to set parent death signal for child process");
+            if let Err(err) = set_parent_death_signal(libc::SIGTERM) {
+                // If setting PDEATHSIG fails, log but continue. Process groups still help cleanup.
+                eprintln!(
+                    "Warning: Failed to set parent death signal for child process: {}",
+                    err
+                );
             }
 
             Ok(())
@@ -208,21 +195,11 @@ mod tests {
         let socket_path = temp_dir.path().join("custom_libagent.socket");
 
         // Ensure clean state by removing any existing value
-        unsafe {
-            std::env::remove_var("LIBAGENT_TRACE_AGENT_UDS");
-        }
-
-        unsafe {
-            std::env::set_var("LIBAGENT_TRACE_AGENT_UDS", &socket_path);
-        }
-
-        // Verify the environment variable is set correctly
-        assert_eq!(
-            std::env::var("LIBAGENT_TRACE_AGENT_UDS").as_deref(),
-            Ok(socket_path.to_string_lossy().as_ref())
-        );
-
         let mut cmd = Command::new("true");
+        let socket_override = socket_path.to_string_lossy().to_string();
+        unsafe {
+            std::env::set_var("LIBAGENT_TRACE_AGENT_UDS", &socket_override);
+        }
         configure_trace_agent_command(&mut cmd);
 
         let socket_env = cmd
@@ -239,6 +216,7 @@ mod tests {
         unsafe {
             std::env::remove_var("LIBAGENT_TRACE_AGENT_UDS");
         }
+        drop(socket_path);
     }
 
     #[cfg(windows)]

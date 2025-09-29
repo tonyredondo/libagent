@@ -10,7 +10,7 @@ Minimal-runtime Rust library that ensures the Datadog Agent and Trace Agent are 
 ## Features
 - Starts and monitors Agent + Trace Agent with exponential backoff
 - Graceful shutdown (SIGTERM then SIGKILL on Unix; Windows Job kill)
-- Idempotent `initialize`/`stop`; destructor stops on unload
+- Thread-safe, idempotent `initialize`/`stop`; destructor stops on unload
 - Cross‑platform: Linux, macOS, Windows (tested in CI)
 
 ## Build
@@ -131,7 +131,7 @@ int main(void) {
 Callback API notes:
 - Socket path resolution (Unix): env `LIBAGENT_TRACE_AGENT_UDS` or default `/tmp/datadog_libagent.socket` (temp directory).
 - Pipe name resolution (Windows): env `LIBAGENT_TRACE_AGENT_PIPE` or default `datadog-libagent` (full path: `\\.\\pipe\\datadog-libagent`).
-- Timeout: 50 seconds for both Unix UDS and Windows Named Pipe connections.
+- Timeout: 50 seconds for both Unix UDS and Windows Named Pipe connections (Windows uses overlapped I/O with cancellation to enforce deadlines).
 - `headers`: string with lines `Name: Value` separated by `\n` or `\r\n`.
 - Callbacks receive data directly - no memory management required!
 - `on_error` callback may be `NULL` if error handling is not needed.

@@ -22,7 +22,7 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 - Rust style with `rustfmt` defaults (4-space indent, imports grouped).
 - Naming: `snake_case` for fns/vars; `CamelCase` for types; modules in `snake_case`.
 - FFI uses PascalCase (`Initialize`, `Stop`) intentionally; keep Rust wrappers idiomatic.
-- Keep modules focused; prefer small helpers in `manager.rs` over sprawling functions.
+- Keep modules focused; prefer small helpers in `manager.rs` over sprawling functions. `initialize()` is thread-safe; feel free to call it from multiple threads so long as you avoid re-entrant env mutation races in your own code.
 
 ## Testing Guidelines
 - Integration tests live in `tests/` and use `serial_test` to isolate global state. Mark new stateful tests with `#[serial]`.
@@ -62,7 +62,7 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 
 ### Proxy FFI
 - New export: `ProxyTraceAgent(...)` proxies an HTTP request over an IPC transport to the trace-agent using callback-based API. On Unix this uses UDS; on Windows it uses Named Pipes.
-- Windows note: the named-pipe client uses a reusable worker pool (4 workers by default) to handle concurrent requests efficiently under high load, with per-request timeout support (default: 50 seconds).
+- Windows note: the named-pipe client uses a reusable worker pool (4 workers by default) and overlapped I/O with cancellation to enforce the per-request timeout (default: 50 seconds) even when the server stalls.
 - Callback-based API: provides `ResponseCallback` and `ErrorCallback` function pointers for handling responses/errors without manual memory management.
 - Either success or error callback is guaranteed to be called before the function returns.
 - See `include/libagent.h` for the callback function type definitions.

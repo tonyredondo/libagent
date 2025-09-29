@@ -28,8 +28,8 @@ mod uds;
 mod winpipe;
 
 pub use config::{
-    get_agent_args, get_agent_program, get_backoff_initial_secs, get_backoff_max_secs,
-    get_monitor_interval_secs, get_trace_agent_args, get_trace_agent_program,
+    get_agent_args, get_agent_program, get_agent_remote_config_addr, get_backoff_initial_secs,
+    get_backoff_max_secs, get_monitor_interval_secs, get_trace_agent_args, get_trace_agent_program,
 };
 #[cfg(unix)]
 pub use config::{get_graceful_shutdown_timeout_secs, get_trace_agent_uds_path};

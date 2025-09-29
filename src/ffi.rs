@@ -775,4 +775,44 @@ mod tests {
         // The return value could be -2 (request error) or -100 (panic), both are acceptable
         assert!(result == -2 || result == -100);
     }
+
+    #[test]
+    fn test_trace_agent_readiness_reset_on_respawn() {
+        // This test verifies that trace-agent readiness is properly reset when a new instance is spawned.
+        // This is a regression test for the bug where readiness wasn't reset on respawn.
+
+        let manager = crate::manager::get_manager();
+
+        // Initially, no trace-agent is spawned, so readiness check should return Ok (skip check)
+        let result = manager.ensure_trace_agent_ready();
+        assert!(result.is_ok());
+
+        // Initially, readiness should be false
+        assert!(
+            !manager.is_trace_agent_ready(),
+            "Initial readiness should be false"
+        );
+
+        // Mark as ready to simulate successful readiness check
+        manager.set_trace_agent_ready_for_test(true);
+
+        assert!(
+            manager.is_trace_agent_ready(),
+            "Readiness should be true after manual set"
+        );
+
+        // Simulate respawn by calling reset_trace_agent_readiness (this is what spawn_process does)
+        manager.reset_trace_agent_readiness();
+
+        // Readiness should be reset to false
+        assert!(
+            !manager.is_trace_agent_ready(),
+            "Trace-agent readiness should be reset to false after reset call"
+        );
+
+        // Now test that ensure_trace_agent_ready works correctly with the reset flag
+        // Since no real trace-agent is running, it should return Ok (skip check when trace_child is None)
+        let result = manager.ensure_trace_agent_ready();
+        assert!(result.is_ok());
+    }
 }

@@ -22,7 +22,7 @@ pub struct Metrics {
     /// Total number of trace-agent process failures
     trace_agent_failures: AtomicU64,
     /// Time when the manager was first initialized
-    initialization_time: std::sync::OnceLock<Instant>,
+    initialization_time: Mutex<Option<Instant>>,
 
     /// HTTP proxy request metrics by method
     proxy_get_requests: AtomicU64,
@@ -114,7 +114,7 @@ impl Metrics {
             trace_agent_spawns: AtomicU64::new(0),
             agent_failures: AtomicU64::new(0),
             trace_agent_failures: AtomicU64::new(0),
-            initialization_time: std::sync::OnceLock::new(),
+            initialization_time: Mutex::new(None),
             proxy_get_requests: AtomicU64::new(0),
             proxy_post_requests: AtomicU64::new(0),
             proxy_delete_requests: AtomicU64::new(0),
@@ -153,7 +153,16 @@ impl Metrics {
 
     /// Records the initialization time.
     pub fn record_initialization(&self) {
-        let _ = self.initialization_time.set(Instant::now());
+        if let Ok(mut guard) = self.initialization_time.lock() {
+            *guard = Some(Instant::now());
+        }
+    }
+
+    /// Clears the initialization time, used when the manager fully stops.
+    pub fn clear_initialization(&self) {
+        if let Ok(mut guard) = self.initialization_time.lock() {
+            *guard = None;
+        }
     }
 
     /// Records an HTTP proxy request by method.
@@ -218,7 +227,10 @@ impl Metrics {
 
     /// Gets the uptime since initialization, if initialized.
     pub fn uptime(&self) -> Option<Duration> {
-        self.initialization_time.get().map(|start| start.elapsed())
+        self.initialization_time
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|start| start.elapsed()))
     }
 
     /// Gets the number of proxy requests by HTTP method
