@@ -494,10 +494,8 @@ impl AgentManager {
 
         // Log final metrics if debug logging is enabled
         if is_debug_enabled() {
-            log_debug(&format!(
-                "Final metrics summary:\n{}",
-                crate::metrics::get_metrics().format_metrics()
-            ));
+            // Print metrics summary to stdout so users can see it
+            println!("{}", crate::metrics::get_metrics().format_metrics());
         }
 
         // Reset uptime so the next initialize() call represents a fresh session
@@ -683,6 +681,13 @@ pub fn stop() {
     if let Some(cell) = GLOBAL_MANAGER.get() {
         let manager = cell.lock().expect("manager lock poisoned").clone();
         manager.stop();
+    } else {
+        // No manager was started, but log metrics anyway if debug is enabled
+        // (useful when ProxyTraceAgent was used without initialize())
+        if crate::logging::is_debug_enabled() {
+            // Print metrics summary to stdout so users can see it
+            println!("{}", crate::metrics::get_metrics().format_metrics());
+        }
     }
 }
 
