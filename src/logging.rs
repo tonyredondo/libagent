@@ -5,24 +5,21 @@
 
 use std::sync::OnceLock;
 
-/// Environment variable to enable verbose debug logging.
-///
-/// When this variable is set to a truthy value ("1", "true", "yes", "on"),
-/// the library prints detailed logs about its activity, and the spawned
-/// subprocesses' stdout/stderr are inherited by the host process so their
-/// output becomes visible.
-const ENV_DEBUG: &str = "LIBAGENT_DEBUG";
 const ENV_LOG_LEVEL: &str = "LIBAGENT_LOG"; // one of: error, warn, info, debug
 
-/// Returns true if debug logging is enabled via `LIBAGENT_DEBUG`.
+/// Returns true if debug logging is enabled via `LIBAGENT_LOG=debug`.
 pub fn is_debug_enabled() -> bool {
     static DEBUG: OnceLock<bool> = OnceLock::new();
-    *DEBUG.get_or_init(|| match std::env::var(ENV_DEBUG) {
-        Ok(val) => {
+    *DEBUG.get_or_init(|| {
+        // Check if LIBAGENT_LOG is set to debug
+        if let Ok(val) = std::env::var(ENV_LOG_LEVEL) {
             let normalized = val.trim().to_ascii_lowercase();
-            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+            if normalized == "debug" {
+                return true;
+            }
         }
-        Err(_) => false,
+
+        false
     })
 }
 

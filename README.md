@@ -35,7 +35,7 @@ Outputs include a Rust `rlib` and a shared library (`.so/.dylib/.dll`) per the c
 - FFI (`ffi.rs`): exports `Initialize`, `Stop`, `GetMetrics`, and a transport-agnostic trace-agent proxy (`ProxyTraceAgent`) with `catch_unwind`.
   - Unix: connects over UDS.
   - Windows: connects over Windows Named Pipes.
-- Logging: `LIBAGENT_LOG` level and `LIBAGENT_DEBUG` to inherit child stdout/stderr.
+- Logging: `LIBAGENT_LOG` level (set to `debug` for verbose logging and metrics output)
 
 For a deeper dive, see ARCHITECTURE.md.
 
@@ -150,7 +150,7 @@ Defaults live in `src/config.rs`. Override at runtime via environment variables:
 - `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`
 - `LIBAGENT_TRACE_AGENT_UDS`, `LIBAGENT_TRACE_AGENT_PIPE` (override IPC endpoints; respected by the spawner, monitor, readiness checks, and proxy requests)
 - `LIBAGENT_MONITOR_INTERVAL_SECS`
-- Logging: `LIBAGENT_LOG` (error|warn|info|debug), `LIBAGENT_DEBUG` (1/true)
+- Logging: `LIBAGENT_LOG` (error|warn|info|debug)
 
 Notes:
 - `*_ARGS` values are parsed using shell-words. Quote arguments as you would in a shell, e.g. `LIBAGENT_AGENT_ARGS='-c "my arg"'`.
@@ -187,8 +187,8 @@ cargo +nightly test -- --nocapture
 - **Format**: `2025-09-26T14:44:51.408Z [libagent] [LEVEL] message`
 - **Timestamps**: ISO 8601 format with millisecond precision (UTC)
 - **Levels**: `[ERROR]`, `[WARN]`, `[INFO]`, `[DEBUG]`
-- Default: the library writes its own logs to stderr. Child process stdout/stderr are inherited when `LIBAGENT_DEBUG=1` or when `LIBAGENT_LOG=debug`.
-- `LIBAGENT_DEBUG=1` also sets the internal log level to `debug`.
+- Default: the library writes its own logs to stderr. Child process stdout/stderr are inherited when `LIBAGENT_LOG=debug`.
+- `LIBAGENT_LOG=debug` enables debug logging and metrics output.
 - Optional log facade: enable the `log` feature to route logs through the Rust `log` crate.
 
 Cargo example (path dependency):

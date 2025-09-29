@@ -43,7 +43,7 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 - Never commit code that fails these checks. Use pre-commit hooks or CI to enforce compliance.
 
 ## Security & Configuration Tips
-- Default programs/args live in `src/config.rs`. Runtime overrides (for dev/tests): `LIBAGENT_AGENT_ENABLED`, `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`, `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`, `LIBAGENT_MONITOR_INTERVAL_SECS`, `LIBAGENT_LOG`, `LIBAGENT_DEBUG`.
+- Default programs/args live in `src/config.rs`. Runtime overrides (for dev/tests): `LIBAGENT_AGENT_ENABLED`, `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`, `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`, `LIBAGENT_MONITOR_INTERVAL_SECS`, `LIBAGENT_LOG`.
 - **Trace Agent IPC-Only Operation**: The trace-agent is automatically configured for IPC-only operation (TCP port disabled) to ensure secure, local-only communication. Custom UDS/Named Pipe paths prevent conflicts with system installations.
 - **Smart Process Spawning**: Trace-agent only spawns if IPC resources are available; Agent only spawns if enabled AND no existing remote configuration service is detected. Agent is disabled by default to support custom trace-agents. When agent is enabled, remote config cooperation is automatically enabled. This prevents conflicts between multiple libagent instances and respects existing Datadog installations.
 - **Process Ownership Safety**: libagent only terminates processes it spawned. External processes using the same IPC resources are left untouched.

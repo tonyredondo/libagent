@@ -678,10 +678,13 @@ pub fn stop() {
         winpipe::shutdown_worker_pool();
     }
 
+    log_debug("Global stop: checking if manager exists");
     if let Some(cell) = GLOBAL_MANAGER.get() {
+        log_debug("Global stop: manager exists, calling manager.stop()");
         let manager = cell.lock().expect("manager lock poisoned").clone();
         manager.stop();
     } else {
+        log_debug("Global stop: no manager started");
         // No manager was started, but log metrics anyway if debug is enabled
         // (useful when ProxyTraceAgent was used without initialize())
         if crate::logging::is_debug_enabled() {
@@ -713,22 +716,22 @@ mod tests {
     #[test]
     fn test_is_debug_enabled_true_values() {
         // Snapshot the original value to restore later
-        let original_value = env::var("LIBAGENT_DEBUG").ok();
+        let original_value = env::var("LIBAGENT_LOG").ok();
         unsafe {
-            env::set_var("LIBAGENT_DEBUG", "1");
+            env::set_var("LIBAGENT_LOG", "debug");
         }
-        // Test that the function returns true when LIBAGENT_DEBUG=1
+        // Test that the function returns true when LIBAGENT_LOG=debug
         // We can't easily test this due to OnceLock caching, but we can at least
         // verify the environment variable is set correctly
-        assert_eq!(env::var("LIBAGENT_DEBUG").unwrap(), "1");
+        assert_eq!(env::var("LIBAGENT_LOG").unwrap(), "debug");
 
         // Restore the original value
         match original_value {
             Some(val) => unsafe {
-                env::set_var("LIBAGENT_DEBUG", val);
+                env::set_var("LIBAGENT_LOG", val);
             },
             None => unsafe {
-                env::remove_var("LIBAGENT_DEBUG");
+                env::remove_var("LIBAGENT_LOG");
             },
         }
     }
@@ -751,9 +754,9 @@ mod tests {
     #[test]
     fn test_current_log_level_debug() {
         unsafe {
-            env::set_var("LIBAGENT_DEBUG", "1");
+            env::set_var("LIBAGENT_LOG", "debug");
         }
-        // This would set log level to Debug, but we can't test OnceLock easily
+        // This sets log level to Debug, but we can't test OnceLock easily
     }
 
     #[test]
