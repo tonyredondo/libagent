@@ -129,7 +129,7 @@ int main(void) {
 ```
 
 Callback API notes:
-- Socket path resolution (Unix): env `LIBAGENT_TRACE_AGENT_UDS` or default `/tmp/datadog_libagent.socket` (temp directory).
+- Socket path resolution (Unix): env `LIBAGENT_TRACE_AGENT_UDS` or default `/tmp/datadog_libagent.socket`.
 - Pipe name resolution (Windows): env `LIBAGENT_TRACE_AGENT_PIPE` or default `datadog-libagent` (full path: `\\.\\pipe\\datadog-libagent`).
 - Timeout: 50 seconds for both Unix UDS and Windows Named Pipe connections (Windows uses overlapped I/O with cancellation to enforce deadlines).
 - `headers`: string with lines `Name: Value` separated by `\n` or `\r\n`.

@@ -186,16 +186,11 @@ pub fn get_monitor_interval_secs() -> u64 {
 }
 
 /// Returns trace agent UDS path, allowing env override via `LIBAGENT_TRACE_AGENT_UDS`.
-/// For libagent, uses a custom temp path to avoid conflicts with system trace-agent.
+/// For libagent, uses `/tmp/datadog_libagent.socket` to avoid conflicts with system trace-agent.
 #[cfg(unix)]
 pub fn get_trace_agent_uds_path() -> String {
-    std::env::var(ENV_TRACE_AGENT_UDS).unwrap_or_else(|_| {
-        let temp_dir = std::env::temp_dir();
-        temp_dir
-            .join("datadog_libagent.socket")
-            .to_string_lossy()
-            .to_string()
-    })
+    std::env::var(ENV_TRACE_AGENT_UDS)
+        .unwrap_or_else(|_| "/tmp/datadog_libagent.socket".to_string())
 }
 
 /// Returns trace agent Windows Named Pipe name, allowing env override via `LIBAGENT_TRACE_AGENT_PIPE`.
@@ -420,14 +415,9 @@ mod tests {
         // Double-check cleanup
         assert!(std::env::var(ENV_TRACE_AGENT_UDS).is_err());
 
-        // Test default value - should be temp directory + datadog_libagent.socket
+        // Test default value - should be /tmp/datadog_libagent.socket
         let path = get_trace_agent_uds_path();
-        let temp_dir = std::env::temp_dir();
-        let expected = temp_dir
-            .join("datadog_libagent.socket")
-            .to_string_lossy()
-            .to_string();
-        assert_eq!(path, expected);
+        assert_eq!(path, "/tmp/datadog_libagent.socket");
     }
 
     #[cfg(unix)]
