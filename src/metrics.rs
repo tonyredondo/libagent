@@ -42,6 +42,11 @@ pub struct Metrics {
 
     /// Response time tracking (moving averages in milliseconds)
     response_times: Mutex<ResponseTimeStats>,
+
+    /// DogStatsD metrics
+    dogstatsd_requests: AtomicU64,
+    dogstatsd_successes: AtomicU64,
+    dogstatsd_errors: AtomicU64,
 }
 
 /// Response time statistics with moving averages
@@ -128,6 +133,9 @@ impl Metrics {
             proxy_4xx_responses: AtomicU64::new(0),
             proxy_5xx_responses: AtomicU64::new(0),
             response_times: Mutex::new(ResponseTimeStats::new()),
+            dogstatsd_requests: AtomicU64::new(0),
+            dogstatsd_successes: AtomicU64::new(0),
+            dogstatsd_errors: AtomicU64::new(0),
         }
     }
 
@@ -203,6 +211,21 @@ impl Metrics {
         if let Ok(mut stats) = self.response_times.lock() {
             stats.update(duration_ms, status_code);
         }
+    }
+
+    /// Records a DogStatsD metric send request.
+    pub fn record_dogstatsd_request(&self) {
+        self.dogstatsd_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records a successful DogStatsD metric send.
+    pub fn record_dogstatsd_success(&self) {
+        self.dogstatsd_successes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records a failed DogStatsD metric send.
+    pub fn record_dogstatsd_error(&self) {
+        self.dogstatsd_errors.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Gets the total number of agent spawns.
@@ -319,6 +342,21 @@ impl Metrics {
             .unwrap_or(0)
     }
 
+    /// Gets the total number of DogStatsD requests.
+    pub fn dogstatsd_requests(&self) -> u64 {
+        self.dogstatsd_requests.load(Ordering::Relaxed)
+    }
+
+    /// Gets the total number of successful DogStatsD sends.
+    pub fn dogstatsd_successes(&self) -> u64 {
+        self.dogstatsd_successes.load(Ordering::Relaxed)
+    }
+
+    /// Gets the total number of failed DogStatsD sends.
+    pub fn dogstatsd_errors(&self) -> u64 {
+        self.dogstatsd_errors.load(Ordering::Relaxed)
+    }
+
     /// Gets all metrics as a human-readable string.
     pub fn format_metrics(&self) -> String {
         let mut output = String::new();
@@ -390,6 +428,12 @@ impl Metrics {
         } else {
             output.push_str("    no_response_times_recorded\n");
         }
+
+        // DogStatsD metrics
+        output.push_str("\n  DogStatsD Metrics:\n");
+        output.push_str(&format!("    requests: {}\n", self.dogstatsd_requests()));
+        output.push_str(&format!("    successes: {}\n", self.dogstatsd_successes()));
+        output.push_str(&format!("    errors: {}\n", self.dogstatsd_errors()));
 
         output
     }

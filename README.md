@@ -136,6 +136,62 @@ Callback API notes:
 - Callbacks receive data directly - no memory management required!
 - `on_error` callback may be `NULL` if error handling is not needed.
 
+### DogStatsD Metrics
+
+Send custom metrics to DogStatsD via Unix Domain Socket (Unix) or Named Pipe (Windows).
+
+```c
+#include "libagent.h"
+#include <stdio.h>
+#include <string.h>
+
+int main() {
+    Initialize();
+
+    // Send a counter metric
+    const char* counter = "page.views:1|c|#env:prod,service:web";
+    int32_t result = SendDogStatsDMetric(
+        (const uint8_t*)counter,
+        strlen(counter)
+    );
+    if (result != 0) {
+        fprintf(stderr, "Failed to send metric: %d\n", result);
+    }
+
+    // Send a gauge metric
+    const char* gauge = "temperature:72.5|g|#location:office";
+    SendDogStatsDMetric((const uint8_t*)gauge, strlen(gauge));
+
+    // Send a histogram metric
+    const char* histogram = "request.duration:250|h|@0.5|#endpoint:/api";
+    SendDogStatsDMetric((const uint8_t*)histogram, strlen(histogram));
+
+    // Batch multiple metrics (separated by newlines)
+    const char* batch = "page.views:1|c\n"
+                       "active.users:42|g\n"
+                       "request.time:100|ms";
+    SendDogStatsDMetric((const uint8_t*)batch, strlen(batch));
+
+    Stop();
+    return 0;
+}
+```
+
+DogStatsD API notes:
+- **Fire-and-forget**: Metrics are sent as datagrams without waiting for responses
+- **Return codes**: `0` = success, `-1` = validation error, `-2` = send error
+- **Socket path** (Unix): env `LIBAGENT_DOGSTATSD_UDS` or default `/tmp/datadog_dogstatsd.socket`
+- **Pipe name** (Windows): env `LIBAGENT_DOGSTATSD_PIPE` or default `datadog-dogstatsd`
+- **Protocol**: Standard DogStatsD text format
+  - Counter: `metric.name:value|c|#tags`
+  - Gauge: `metric.name:value|g|#tags`
+  - Histogram: `metric.name:value|h|@sample_rate|#tags`
+  - Distribution: `metric.name:value|d|#tags`
+  - Set: `metric.name:value|s|#tags`
+  - Timing: `metric.name:value|ms|#tags`
+- **Batching**: Separate multiple metrics with newlines (`\n`)
+- **Tags**: Optional, format: `#tag1:value1,tag2:value2`
+
 Metrics API:
 - `GetMetrics()` returns a `MetricsData` struct with all current metrics values.
 - Provides direct access to process lifecycle metrics, HTTP proxy request/response counts, and response time moving averages.
@@ -148,7 +204,8 @@ Defaults live in `src/config.rs`. Override at runtime via environment variables:
 - `LIBAGENT_AGENT_ENABLED` (enable main agent; disabled by default for custom trace-agents)
 - `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`
 - `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`
-- `LIBAGENT_TRACE_AGENT_UDS`, `LIBAGENT_TRACE_AGENT_PIPE` (override IPC endpoints; respected by the spawner, monitor, readiness checks, and proxy requests)
+- `LIBAGENT_TRACE_AGENT_UDS`, `LIBAGENT_TRACE_AGENT_PIPE` (override trace agent IPC endpoints; respected by spawner, monitor, readiness checks, and proxy requests)
+- `LIBAGENT_DOGSTATSD_UDS`, `LIBAGENT_DOGSTATSD_PIPE` (override DogStatsD IPC endpoints for metric sending)
 - `LIBAGENT_MONITOR_INTERVAL_SECS`
 - Logging: `LIBAGENT_LOG` (error|warn|info|debug)
 

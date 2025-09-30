@@ -4,9 +4,10 @@ These examples demonstrate the complete libagent FFI API including:
 - **Initialize()** - Start the library and agent processes
 - **GetMetrics()** - Retrieve comprehensive metrics and statistics
 - **ProxyTraceAgent()** - Proxy HTTP requests to the trace-agent
+- **SendDogStatsDMetric()** - Send custom metrics to DogStatsD
 - **Stop()** - Clean shutdown of all processes
 
-All examples show how to proxy HTTP requests over local IPC transport to the Datadog trace-agent.
+All examples show how to proxy HTTP requests and send metrics over local IPC transport to the Datadog trace-agent and DogStatsD.
 
 Prerequisites
 - Build the library: `cargo +nightly build` (or `--release`).
@@ -27,9 +28,91 @@ Notes
 - **Trace Agent Configuration**: libagent automatically configures the trace-agent for IPC-only operation (TCP port disabled) using custom paths to prevent conflicts with system installations.
 - **Smart Process Management**: libagent only spawns agents when IPC resources are available and no existing Datadog agents are detected, ensuring cooperation rather than competition.
 
+## DogStatsD Metric Sending Examples
+
+Dedicated examples showing how to send custom metrics using the DogStatsD protocol:
+
+### C (examples/c/dogstatsd.c)
+Demonstrates all DogStatsD metric types (counter, gauge, histogram, distribution, set, timing) and batching.
+
+Compile and run:
+```bash
+clang -I include -L target/debug -llibagent examples/c/dogstatsd.c -o examples/c/dogstatsd
+DYLD_LIBRARY_PATH=target/debug examples/c/dogstatsd
+```
+
+### Python (examples/python/dogstatsd.py)
+Fire-and-forget metric sending with full DogStatsD protocol support.
+
+Run:
+```bash
+DYLD_LIBRARY_PATH=target/debug python3 examples/python/dogstatsd.py
+```
+
+### Go (cgo) (examples/go/dogstatsd.go)
+Shows efficient batching and all metric types.
+
+Run:
+```bash
+cd examples/go && go run dogstatsd.go
+```
+
+### Go (PureGo) (examples/go-pure/dogstatsd.go)
+Pure Go example using purego (no cgo required).
+
+Run:
+```bash
+cd examples/go-pure && go run dogstatsd.go
+```
+
+### Java + JNA (examples/java/DogStatsD.java)
+Complete metric sending example with all DogStatsD types.
+
+Compile and run:
+```bash
+javac -cp jna-5.13.0.jar examples/java/DogStatsD.java
+java -cp .:jna-5.13.0.jar -Djna.library.path=target/debug examples.java.DogStatsD
+```
+
+### .NET (examples/dotnet/DogStatsD.cs)
+Fire-and-forget metric sending with P/Invoke.
+
+Run:
+```bash
+dotnet run examples/dotnet/DogStatsD.cs
+```
+
+### Node.js (examples/js/dogstatsd.js)
+Promise-based metric sending using ffi-napi.
+
+Install dependencies and run:
+```bash
+npm install ffi-napi ref-napi
+DYLD_LIBRARY_PATH=target/debug node examples/js/dogstatsd.js
+```
+
+### Ruby (examples/ruby/dogstatsd.rb)
+Complete example with all metric types using Ruby FFI.
+
+Install dependencies and run:
+```bash
+gem install ffi
+DYLD_LIBRARY_PATH=target/debug ruby examples/ruby/dogstatsd.rb
+```
+
+**DogStatsD Configuration:**
+- Unix socket: set `LIBAGENT_DOGSTATSD_UDS` (default: `/tmp/datadog_dogstatsd.socket`)
+- Windows pipe: set `LIBAGENT_DOGSTATSD_PIPE` (default: `datadog-dogstatsd`)
+- Protocol: Standard DogStatsD text format
+- Batching: Separate multiple metrics with newlines
+
 ---
 
-C (examples/c/uds_proxy.c)
+## HTTP Proxy Examples
+
+Complete examples showing trace proxying via `ProxyTraceAgent()`:
+
+### C (examples/c/uds_proxy.c)
 
 Compile (Linux/macOS):
 
@@ -45,7 +128,7 @@ examples/c/uds_proxy
 
 ---
 
-Go (cgo) (examples/go/main.go)
+### Go (cgo) (examples/go/main.go)
 
 Build and run (module-less):
 
@@ -57,7 +140,7 @@ Adjust the `#cgo` LDFLAGS in the source if using `--release` output or a differe
 
 ---
 
-Go (PureGo, no cgo) (examples/go-pure/main.go)
+### Go (PureGo, no cgo) (examples/go-pure/main.go)
 
 Uses github.com/cloudflare/purego to dynamically load the shared library and call functions without cgo. Demonstrates complete FFI lifecycle with Initialize, GetMetrics, ProxyTraceAgent, and Stop.
 
@@ -70,7 +153,7 @@ Adjust `LIBAGENT_LIB` to point to the full library path if the loader cannot fin
 
 ---
 
-Java + JNA (examples/java/JNAExample.java)
+### Java + JNA (examples/java/JNAExample.java)
 
 Run (add JNA to classpath):
 
@@ -81,7 +164,7 @@ DYLD_LIBRARY_PATH=target/debug java -cp .:jna-5.13.0.jar examples.java.JNAExampl
 
 ---
 
-.NET (examples/dotnet/Program.cs)
+### .NET (examples/dotnet/Program.cs)
 
 Build as a console app (create a project or compile directly):
 
@@ -94,7 +177,7 @@ Ensure the loader can locate the native library (see prerequisites).
 
 ---
 
-Node.js (examples/js/index.js & examples/js/async-worker.js)
+### Node.js (examples/js/index.js & examples/js/async-worker.js)
 
 Install deps and run:
 
@@ -109,7 +192,7 @@ DYLD_LIBRARY_PATH=target/debug node examples/js/async-worker.js
 
 ---
 
-Python (examples/python/uds_proxy.py)
+### Python (examples/python/uds_proxy.py)
 
 Run:
 
@@ -119,7 +202,7 @@ DYLD_LIBRARY_PATH=target/debug python3 examples/python/uds_proxy.py
 
 ---
 
-Ruby (examples/ruby/uds_proxy.rb)
+### Ruby (examples/ruby/uds_proxy.rb)
 
 Install ffi gem and run:
 

@@ -32,6 +32,9 @@ typedef struct MetricsData {
   double response_time_ema_4xx;
   double response_time_ema_5xx;
   uint64_t response_time_sample_count;
+  uint64_t dogstatsd_requests;
+  uint64_t dogstatsd_successes;
+  uint64_t dogstatsd_errors;
 } MetricsData;
 
 #ifdef __cplusplus
@@ -52,6 +55,8 @@ int32_t ProxyTraceAgent(const char *method,
                         const void *on_response,
                         const void *on_error,
                         void *user_data);
+
+int32_t SendDogStatsDMetric(const uint8_t *payload_ptr, size_t payload_len);
 
 #ifdef __cplusplus
 }  // extern "C"

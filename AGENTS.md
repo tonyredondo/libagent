@@ -47,8 +47,10 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 - **Trace Agent IPC-Only Operation**: The trace-agent is automatically configured for IPC-only operation (TCP port disabled) to ensure secure, local-only communication. Custom UDS/Named Pipe paths prevent conflicts with system installations.
 - **Smart Process Spawning**: Trace-agent only spawns if IPC resources are available; Agent only spawns if enabled AND no existing remote configuration service is detected. Agent is disabled by default to support custom trace-agents. When agent is enabled, remote config cooperation is automatically enabled. This prevents conflicts between multiple libagent instances and respects existing Datadog installations.
 - **Process Ownership Safety**: libagent only terminates processes it spawned. External processes using the same IPC resources are left untouched.
-- UDS proxy: `LIBAGENT_TRACE_AGENT_UDS` overrides the Unix socket path used by both the trace-agent spawner and the proxy (default: `/tmp/datadog_libagent.socket`).
-- Windows Named Pipe proxy: `LIBAGENT_TRACE_AGENT_PIPE` overrides the pipe name used by both the trace-agent spawner and the proxy on Windows (default: `datadog-libagent`, full path: `\\.\\pipe\\datadog-libagent`).
+- **Trace Agent Proxy**: `LIBAGENT_TRACE_AGENT_UDS` overrides the Unix socket path used by both the trace-agent spawner and the proxy (default: `/tmp/datadog_libagent.socket`).
+- **Trace Agent Proxy (Windows)**: `LIBAGENT_TRACE_AGENT_PIPE` overrides the pipe name used by both the trace-agent spawner and the proxy on Windows (default: `datadog-libagent`, full path: `\\.\\pipe\\datadog-libagent`).
+- **DogStatsD Proxy**: `LIBAGENT_DOGSTATSD_UDS` overrides the Unix socket path for metric sending (default: `/tmp/datadog_dogstatsd.socket`).
+- **DogStatsD Proxy (Windows)**: `LIBAGENT_DOGSTATSD_PIPE` overrides the pipe name for metric sending on Windows (default: `datadog-dogstatsd`, full path: `\\.\\pipe\\datadog-dogstatsd`).
 - Monitor conflict detection and readiness checks consume the same overrides so libagent never mixes endpoints across components.
 - `*_ARGS` values are parsed using shell-words. Quote arguments as you would in a shell (e.g., `LIBAGENT_AGENT_ARGS='-c "my arg"'`).
 - `LIBAGENT_AGENT_ENABLED` controls whether the main Datadog agent should be spawned (disabled by default for custom trace-agents).
@@ -75,8 +77,18 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
   - HTTP proxy request counts by method (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS, OTHER)
   - HTTP proxy response counts by status code range (2xx, 3xx, 4xx, 5xx)
   - Response time moving averages (all, 2xx, 4xx, 5xx responses in milliseconds)
+  - DogStatsD metrics (requests, successes, errors)
 - Thread-safe and returns a struct copy - no memory management required.
 - See `include/libagent.h` for the `MetricsData` struct definition.
+
+### DogStatsD FFI
+- New export: `SendDogStatsDMetric(payload_ptr, payload_len)` sends metrics to DogStatsD via IPC.
+- Fire-and-forget operation - no response expected (DogStatsD uses datagrams).
+- Return codes: `0` = success, `-1` = validation error, `-2` = send error.
+- Supports all DogStatsD metric types: counters, gauges, histograms, distributions, sets, timings.
+- Batching supported - send multiple metrics separated by newlines.
+- Transport: Unix Domain Socket (Unix) or Named Pipe (Windows).
+- See `include/libagent.h` for the `SendDogStatsDMetric` function signature.
 
 ## Platform Notes
 - Windows process management uses Job Objects for reliable termination of the child tree. For compatibility across `windows-sys` versions, `CreateJobObjectW` is declared via an `unsafe extern "system"` block; do not change its import path without verifying CI across OS/toolchains.

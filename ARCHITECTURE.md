@@ -86,6 +86,12 @@ flowchart TD
     ensure_ready -->|timeout & release build| proxy_error["return error"]
     ensure_ready -->|timeout & debug build| send_request["send HTTP request\n(allow for testing)"]
 
+    dogstatsd["SendDogStatsDMetric (FFI)"] --> validate["validate payload"]
+    validate -->|valid| send_metric["send metric via UDS/Pipe\n(fire-and-forget)"]
+    validate -->|invalid| return_error["return -1"]
+    send_metric -->|success| return_success["return 0"]
+    send_metric -->|failure| return_send_error["return -2"]
+
     stop["stop"] --> signal["signal monitor to exit"]
     signal --> shutdown{"platform shutdown"}
     shutdown -->|Unix| unix["SIGTERM group; wait; SIGKILL if needed"]
@@ -126,10 +132,13 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
   - `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`
   - `LIBAGENT_MONITOR_INTERVAL_SECS`
   - `LIBAGENT_AGENT_ENABLED` (enable main agent; disabled by default for custom trace-agents)
-  - Transport endpoints:
+  - Trace Agent transport endpoints:
     - Unix UDS: `LIBAGENT_TRACE_AGENT_UDS` (default: `/tmp/datadog_libagent.socket`)
     - Windows Named Pipe: `LIBAGENT_TRACE_AGENT_PIPE` (default: `datadog-libagent`, full path `\\.\\pipe\\datadog-libagent`)
-- IPC overrides are consumed everywhere the endpoint matters: spawning config, readiness checks, monitor conflict detection, and the FFI proxy all read the same value to avoid drift.
+  - DogStatsD transport endpoints:
+    - Unix UDS: `LIBAGENT_DOGSTATSD_UDS` (default: `/tmp/datadog_dogstatsd.socket`)
+    - Windows Named Pipe: `LIBAGENT_DOGSTATSD_PIPE` (default: `datadog-dogstatsd`, full path `\\.\\pipe\\datadog-dogstatsd`)
+- IPC overrides are consumed everywhere the endpoint matters: spawning config, readiness checks, monitor conflict detection, and the FFI proxies all read the same values to avoid drift.
 - Example: `LIBAGENT_AGENT_ARGS='-c "quoted arg"'`
 
 ## Logging
@@ -208,6 +217,27 @@ If the parent application is killed forcefully (SIGKILL, crash, etc.):
 - Platform: Unix (UDS) and Windows (Named Pipes).
 - Callbacks: `ResponseCallback` for success (status, headers, body), `ErrorCallback` for errors (message) - either callback is guaranteed to be called before the function returns.
 
+### DogStatsD Metrics Proxy
+- Purpose: allow embedding consumers to send custom metrics to DogStatsD via local IPC transport (Unix Domain Socket or Named Pipe).
+- Exported function: `int32_t SendDogStatsDMetric(const uint8_t* payload_ptr, size_t payload_len)`.
+- Path resolution:
+  - Unix: Datagram socket via `LIBAGENT_DOGSTATSD_UDS` (default `/tmp/datadog_dogstatsd.socket`).
+  - Windows: Named Pipe via `LIBAGENT_DOGSTATSD_PIPE` (default `datadog-dogstatsd`, full `\\.\\pipe\\datadog-dogstatsd`).
+- Transport: Fire-and-forget datagrams (no response expected).
+- Timeout: 5 seconds for datagram send operations.
+- Protocol: Standard DogStatsD text format (`metric.name:value|type|@sample_rate|#tags`).
+- Supported metric types:
+  - Counter (`c`): Counts occurrences
+  - Gauge (`g`): Point-in-time values
+  - Histogram (`h`): Statistical distributions with sampling
+  - Distribution (`d`): Global statistical distributions
+  - Set (`s`): Unique value counts
+  - Timing (`ms`): Timing measurements
+- Batching: Multiple metrics can be sent in a single call, separated by newlines.
+- Return codes: `0` = success, `-1` = validation error (null/empty payload), `-2` = send error (socket/pipe unavailable).
+- Platform: Unix (UDS datagrams via `SOCK_DGRAM`) and Windows (Named Pipes).
+- Metrics tracking: Records requests, successes, and errors via `MetricsData` struct.
+
 ## Testing Strategy
 - Integration tests under `tests/` use temporary stub scripts to simulate child behavior.
 - `serial_test` isolates global state; environment mutations are marked `unsafe` due to Rust 2024 nightly constraints.
@@ -215,6 +245,7 @@ If the parent application is killed forcefully (SIGKILL, crash, etc.):
 - Cross‑platform coverage:
   - Unix: start/stop lifecycle and respawn/backoff behavior.
   - Unix: UDS proxy (basic + chunked) in `tests/uds_proxy.rs` (skips under sandboxed environments which deny UDS binds).
+  - Unix: DogStatsD proxy (counters, gauges, histograms, distributions, batching) in `tests/dogstatsd_proxy.rs`.
   - Windows: sanity check that Job-based shutdown works in `tests/windows_sanity.rs`.
   - Windows: Named Pipe proxy (basic + chunked) in `tests/windows_pipe_proxy.rs`.
 

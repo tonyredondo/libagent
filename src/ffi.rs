@@ -6,9 +6,14 @@
 //! Rust APIs.
 
 #[cfg(windows)]
+use crate::config::get_dogstatsd_pipe_name;
+#[cfg(unix)]
+use crate::config::get_dogstatsd_uds_path;
+#[cfg(windows)]
 use crate::config::get_trace_agent_pipe_name;
 #[cfg(unix)]
 use crate::config::get_trace_agent_uds_path;
+use crate::dogstatsd;
 use crate::logging::log_debug;
 use crate::manager;
 use crate::uds;
@@ -59,6 +64,11 @@ pub struct MetricsData {
     pub response_time_ema_4xx: f64,
     pub response_time_ema_5xx: f64,
     pub response_time_sample_count: u64,
+
+    /// DogStatsD metrics
+    pub dogstatsd_requests: u64,
+    pub dogstatsd_successes: u64,
+    pub dogstatsd_errors: u64,
 }
 
 /// Initialize the library: start the Agent and Trace Agent and begin monitoring.
@@ -125,6 +135,10 @@ pub extern "C" fn GetMetrics() -> MetricsData {
             response_time_ema_4xx: metrics.response_time_ema_4xx(),
             response_time_ema_5xx: metrics.response_time_ema_5xx(),
             response_time_sample_count: metrics.response_time_sample_count(),
+
+            dogstatsd_requests: metrics.dogstatsd_requests(),
+            dogstatsd_successes: metrics.dogstatsd_successes(),
+            dogstatsd_errors: metrics.dogstatsd_errors(),
         }
     }));
 
@@ -155,6 +169,9 @@ pub extern "C" fn GetMetrics() -> MetricsData {
                 response_time_ema_4xx: 0.0,
                 response_time_ema_5xx: 0.0,
                 response_time_sample_count: 0,
+                dogstatsd_requests: 0,
+                dogstatsd_successes: 0,
+                dogstatsd_errors: 0,
             }
         }
     }
@@ -394,6 +411,138 @@ pub extern "C" fn ProxyTraceAgent(
             let c_err = CString::new("panic in ProxyTraceAgent").unwrap();
             on_error_fn(c_err.as_ptr(), user_data);
         }
+        -100
+    })
+}
+
+/// Sends DogStatsD metrics over Unix Domain Socket or Named Pipe.
+///
+/// This is a fire-and-forget operation - metrics are sent to the DogStatsD service
+/// as datagrams without waiting for a response. The DogStatsD protocol is text-based:
+///
+/// Format: `<metric_name>:<value>|<type>|@<sample_rate>|#<tags>`
+///
+/// Examples:
+/// - Counter: `page.views:1|c`
+/// - Gauge: `temperature:72.5|g|#env:prod`
+/// - Histogram: `request.duration:250|h|@0.5|#endpoint:/api`
+/// - Distribution: `response.size:512|d|#status:200`
+/// - Set: `unique.visitors:user123|s`
+///
+/// Multiple metrics can be batched by separating them with newlines.
+///
+/// # Arguments
+/// * `payload_ptr` - Pointer to the DogStatsD metric payload (text format)
+/// * `payload_len` - Length of the payload in bytes
+///
+/// # Returns
+/// * `0` on success (metric sent)
+/// * `-1` on validation error (null/empty payload)
+/// * `-2` on send error (socket/pipe unavailable)
+/// * `-100` on panic (should never happen)
+///
+/// # Platform Support
+/// - **Unix**: Uses Unix Domain Socket (default: `/tmp/datadog_dogstatsd.socket`)
+/// - **Windows**: Uses Named Pipe (default: `datadog-dogstatsd`)
+/// - Override with `LIBAGENT_DOGSTATSD_UDS` (Unix) or `LIBAGENT_DOGSTATSD_PIPE` (Windows)
+///
+/// # Example
+/// ```c
+/// const char* metric = "page.views:1|c|#env:prod";
+/// int result = SendDogStatsDMetric(
+///     (const uint8_t*)metric,
+///     strlen(metric)
+/// );
+/// if (result != 0) {
+///     fprintf(stderr, "Failed to send metric: %d\n", result);
+/// }
+/// ```
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn SendDogStatsDMetric(payload_ptr: *const u8, payload_len: usize) -> i32 {
+    // Generate unique request ID for tracking concurrent requests
+    let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    log_debug(&format!(
+        "FFI call: SendDogStatsDMetric() [req:{}]",
+        request_id
+    ));
+
+    catch_unwind(AssertUnwindSafe(|| {
+        // Validate payload
+        let payload = unsafe {
+            if payload_ptr.is_null() || payload_len == 0 {
+                log_debug(&format!(
+                    "FFI SendDogStatsDMetric [req:{}]: validation failed: payload is null or empty",
+                    request_id
+                ));
+                return -1;
+            }
+            std::slice::from_raw_parts(payload_ptr, payload_len)
+        };
+
+        // Log payload if it's valid UTF-8
+        if let Ok(payload_str) = std::str::from_utf8(payload) {
+            log_debug(&format!(
+                "FFI SendDogStatsDMetric [req:{}]: sending {} bytes: {}",
+                request_id,
+                payload_len,
+                payload_str.lines().next().unwrap_or(payload_str)
+            ));
+        } else {
+            log_debug(&format!(
+                "FFI SendDogStatsDMetric [req:{}]: sending {} bytes (binary)",
+                request_id, payload_len
+            ));
+        }
+
+        // Record DogStatsD request metrics
+        crate::metrics::get_metrics().record_dogstatsd_request();
+
+        // Reasonable timeout for datagram send
+        let timeout = Duration::from_secs(5);
+
+        // Send the metric
+        #[cfg(unix)]
+        let result = {
+            let uds_path = get_dogstatsd_uds_path();
+            dogstatsd::send_metric_over_uds(request_id, &uds_path, payload, timeout)
+        };
+
+        #[cfg(windows)]
+        let result = {
+            let pipe_name = get_dogstatsd_pipe_name();
+            dogstatsd::send_metric_over_pipe(request_id, &pipe_name, payload, timeout)
+        };
+
+        #[cfg(all(not(unix), not(windows)))]
+        let result = Err("platform not supported".to_string());
+
+        match result {
+            Ok(_) => {
+                log_debug(&format!(
+                    "FFI SendDogStatsDMetric [req:{}]: metric sent successfully",
+                    request_id
+                ));
+                // Record successful send
+                crate::metrics::get_metrics().record_dogstatsd_success();
+                0
+            }
+            Err(err_msg) => {
+                log_debug(&format!(
+                    "FFI SendDogStatsDMetric [req:{}]: send failed: {}",
+                    request_id, err_msg
+                ));
+                // Record error
+                crate::metrics::get_metrics().record_dogstatsd_error();
+                -2
+            }
+        }
+    }))
+    .unwrap_or_else(|_| {
+        log_debug(&format!(
+            "FFI SendDogStatsDMetric [req:{}]: panic occurred",
+            request_id
+        ));
         -100
     })
 }

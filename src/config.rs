@@ -65,6 +65,10 @@ const ENV_AGENT_REMOTE_CONFIG_ADDR: &str = "LIBAGENT_AGENT_REMOTE_CONFIG_ADDR";
 const ENV_TRACE_AGENT_UDS: &str = "LIBAGENT_TRACE_AGENT_UDS";
 #[cfg(windows)]
 const ENV_TRACE_AGENT_PIPE: &str = "LIBAGENT_TRACE_AGENT_PIPE";
+#[cfg(unix)]
+const ENV_DOGSTATSD_UDS: &str = "LIBAGENT_DOGSTATSD_UDS";
+#[cfg(windows)]
+const ENV_DOGSTATSD_PIPE: &str = "LIBAGENT_DOGSTATSD_PIPE";
 
 /// Returns agent program, allowing env override via `LIBAGENT_AGENT_PROGRAM`.
 pub fn get_agent_program() -> String {
@@ -198,6 +202,20 @@ pub fn get_trace_agent_uds_path() -> String {
 #[cfg(windows)]
 pub fn get_trace_agent_pipe_name() -> String {
     std::env::var(ENV_TRACE_AGENT_PIPE).unwrap_or_else(|_| "datadog-libagent".to_string())
+}
+
+/// Returns DogStatsD UDS path, allowing env override via `LIBAGENT_DOGSTATSD_UDS`.
+/// For libagent, uses `/tmp/datadog_dogstatsd.socket` to match the custom agent default.
+#[cfg(unix)]
+pub fn get_dogstatsd_uds_path() -> String {
+    std::env::var(ENV_DOGSTATSD_UDS).unwrap_or_else(|_| "/tmp/datadog_dogstatsd.socket".to_string())
+}
+
+/// Returns DogStatsD Windows Named Pipe name, allowing env override via `LIBAGENT_DOGSTATSD_PIPE`.
+/// For libagent, uses a custom pipe name matching the custom agent default.
+#[cfg(windows)]
+pub fn get_dogstatsd_pipe_name() -> String {
+    std::env::var(ENV_DOGSTATSD_PIPE).unwrap_or_else(|_| "datadog-dogstatsd".to_string())
 }
 
 /// Returns initial backoff seconds for respawn, with validation.
@@ -467,6 +485,72 @@ mod tests {
         assert_eq!(name, "custom-pipe");
         unsafe {
             std::env::remove_var(ENV_TRACE_AGENT_PIPE);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn test_get_dogstatsd_uds_path_default() {
+        // Clean up any environment variables from previous tests
+        unsafe {
+            std::env::remove_var(ENV_DOGSTATSD_UDS);
+        }
+        // Double-check cleanup
+        assert!(std::env::var(ENV_DOGSTATSD_UDS).is_err());
+
+        // Test default value - should be /tmp/datadog_dogstatsd.socket
+        let path = get_dogstatsd_uds_path();
+        assert_eq!(path, "/tmp/datadog_dogstatsd.socket");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn test_get_dogstatsd_uds_path_override() {
+        // Ensure clean state
+        unsafe {
+            std::env::remove_var(ENV_DOGSTATSD_UDS);
+        }
+
+        unsafe {
+            std::env::set_var(ENV_DOGSTATSD_UDS, "/tmp/custom_dogstatsd.socket");
+        }
+        let path = get_dogstatsd_uds_path();
+        assert_eq!(path, "/tmp/custom_dogstatsd.socket");
+
+        // Clean up
+        unsafe {
+            std::env::remove_var(ENV_DOGSTATSD_UDS);
+        }
+        // Verify cleanup
+        assert!(std::env::var(ENV_DOGSTATSD_UDS).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[serial]
+    fn test_get_dogstatsd_pipe_name_default() {
+        // Clean up any environment variables from previous tests
+        unsafe {
+            std::env::remove_var(ENV_DOGSTATSD_PIPE);
+        }
+        // Test default value - should be custom dogstatsd pipe name
+        let name = get_dogstatsd_pipe_name();
+        assert_eq!(name, "datadog-dogstatsd");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[serial]
+    fn test_get_dogstatsd_pipe_name_override() {
+        unsafe {
+            std::env::set_var(ENV_DOGSTATSD_PIPE, "custom-dogstatsd-pipe");
+        }
+        let name = get_dogstatsd_pipe_name();
+        assert_eq!(name, "custom-dogstatsd-pipe");
+        unsafe {
+            std::env::remove_var(ENV_DOGSTATSD_PIPE);
         }
     }
 
