@@ -373,7 +373,11 @@ fn monitor_loop(manager: &crate::manager::AgentManager) {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
+    use serial_test::serial;
+
+    #[cfg(unix)]
     #[test]
+    #[serial]
     fn test_tick_process_respects_uds_override_conflict() {
         use std::os::unix::net::UnixListener;
 

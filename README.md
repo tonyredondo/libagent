@@ -44,6 +44,7 @@ For a deeper dive, see ARCHITECTURE.md.
 libagent implements smart process spawning to prevent conflicts and ensure cooperation:
 
 ### Trace-Agent Spawning
+- **Binary name**: `agentless-agent` (searches in: 1) libagent library directory, 2) host executable directory, 3) system PATH)
 - **Spawns when**: IPC socket/pipe (`/tmp/datadog_libagent.socket` or `\\.\pipe\datadog-libagent`) is available
 - **Skips when**: Another process is already using the IPC endpoint
 - **Configuration**: IPC-only mode (TCP disabled, custom socket/pipe path). Overrides via `LIBAGENT_TRACE_AGENT_UDS` or `LIBAGENT_TRACE_AGENT_PIPE` apply to process spawning, monitor conflict detection, readiness checks, and the proxy so every component targets the same endpoint.
@@ -203,7 +204,7 @@ Notes: The `Initialize` and `Stop` FFI functions return `void`. The `ProxyTraceA
 Defaults live in `src/config.rs`. Override at runtime via environment variables:
 - `LIBAGENT_AGENT_ENABLED` (enable main agent; disabled by default for custom trace-agents)
 - `LIBAGENT_AGENT_PROGRAM`, `LIBAGENT_AGENT_ARGS`
-- `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS`
+- `LIBAGENT_TRACE_AGENT_PROGRAM`, `LIBAGENT_TRACE_AGENT_ARGS` (default: `agentless-agent` with smart path search)
 - `LIBAGENT_TRACE_AGENT_UDS`, `LIBAGENT_TRACE_AGENT_PIPE` (override trace agent IPC endpoints; respected by spawner, monitor, readiness checks, and proxy requests)
 - `LIBAGENT_DOGSTATSD_UDS`, `LIBAGENT_DOGSTATSD_PIPE` (override DogStatsD IPC endpoints for metric sending)
 - `LIBAGENT_MONITOR_INTERVAL_SECS`
@@ -214,19 +215,26 @@ Notes:
 - Agent is **disabled by default** to support custom trace-agent implementations.
 - Set `LIBAGENT_AGENT_ENABLED=true` to enable the main Datadog agent.
 - When agent is enabled, remote config cooperation is automatically enabled.
+- **Trace agent binary resolution**: By default, searches for `agentless-agent` in: 1) same directory as libagent library, 2) same directory as host executable, 3) system PATH. Returns first existing file found.
 
 Example with main agent enabled:
 ```sh
 LIBAGENT_AGENT_ENABLED=true \
 LIBAGENT_AGENT_PROGRAM=/usr/bin/datadog-agent \
-LIBAGENT_TRACE_AGENT_PROGRAM=/usr/bin/trace-agent \
+LIBAGENT_TRACE_AGENT_PROGRAM=/path/to/agentless-agent \
 LIBAGENT_LOG=info LIBAGENT_MONITOR_INTERVAL_SECS=1 \
 cargo +nightly test -- --nocapture
 ```
 
-Trace-agent only (default behavior):
+Trace-agent only (default behavior - auto-discovers `agentless-agent`):
 ```sh
-LIBAGENT_TRACE_AGENT_PROGRAM=/path/to/custom/trace-agent \
+LIBAGENT_LOG=info \
+cargo +nightly test -- --nocapture
+```
+
+Custom trace-agent path:
+```sh
+LIBAGENT_TRACE_AGENT_PROGRAM=/path/to/custom/agentless-agent \
 LIBAGENT_LOG=info \
 cargo +nightly test -- --nocapture
 ```
@@ -235,7 +243,7 @@ Traditional Datadog agent cooperation:
 ```sh
 LIBAGENT_AGENT_ENABLED=true \
 LIBAGENT_AGENT_PROGRAM=/usr/bin/datadog-agent \
-LIBAGENT_TRACE_AGENT_PROGRAM=/usr/bin/trace-agent \
+LIBAGENT_TRACE_AGENT_PROGRAM=/path/to/agentless-agent \
 LIBAGENT_LOG=info \
 cargo +nightly test -- --nocapture
 ```

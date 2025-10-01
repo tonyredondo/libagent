@@ -122,7 +122,7 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 ## Configuration
 - Defaults live in `src/config.rs`:
   - Agent program/args: `datadog-agent`, empty args.
-  - Trace Agent program/args: `trace-agent`, empty args (automatically configured with IPC-only settings: TCP port disabled, custom UDS/Named Pipe paths).
+  - Trace Agent program/args: `agentless-agent` (searches in: 1) libagent library directory, 2) host executable directory, 3) system PATH), empty args (automatically configured with IPC-only settings: TCP port disabled, custom UDS/Named Pipe paths).
   - Monitor interval: 1s.
 - Smart spawning logic:
   - Trace-agent: Only spawns if IPC socket/pipe is available (prevents conflicts)
