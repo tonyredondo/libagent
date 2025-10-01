@@ -372,29 +372,31 @@ fn monitor_loop(manager: &crate::manager::AgentManager) {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
+    use super::*;
     use serial_test::serial;
+    use std::process::{Command, Stdio};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    #[cfg(unix)]
+    use std::os::unix::net::UnixListener;
+    #[cfg(unix)]
+    use tempfile::tempdir;
 
     #[cfg(unix)]
     #[test]
     #[serial]
     fn test_tick_process_respects_uds_override_conflict() {
-        use std::os::unix::net::UnixListener;
-
         let socket_path = std::env::current_dir()
             .unwrap()
             .join(format!("libagent_conflict_{}.socket", std::process::id()));
 
-        // Ensure clean state by removing any existing value
         unsafe {
             std::env::remove_var("LIBAGENT_TRACE_AGENT_UDS");
-        }
-
-        unsafe {
             std::env::set_var("LIBAGENT_TRACE_AGENT_UDS", &socket_path);
         }
 
-        // Verify the environment variable is set correctly
         assert_eq!(
             std::env::var("LIBAGENT_TRACE_AGENT_UDS").as_deref(),
             Ok(socket_path.to_string_lossy().as_ref())
@@ -438,11 +440,6 @@ mod tests {
         let mut child_guard = None;
         let mut backoff = super::get_backoff_initial_secs();
         let mut next_attempt = None;
-
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        };
         let spawn_called = Arc::new(AtomicBool::new(false));
         let spawn_fn = {
             let spawn_called = Arc::clone(&spawn_called);
@@ -461,30 +458,182 @@ mod tests {
             &spawn_fn,
         );
 
-        assert!(
-            !spawn_called.load(Ordering::SeqCst),
-            "spawn should not occur when socket is already in use"
-        );
-        assert!(!result, "tick_process should indicate no spawn occurred");
-
-        assert!(
-            child_guard.is_none(),
-            "should skip spawning when socket in use"
-        );
-        assert!(
-            next_attempt.is_none(),
-            "backoff timer should remain unchanged when spawn is skipped"
-        );
-        assert_eq!(
-            backoff,
-            super::get_backoff_initial_secs(),
-            "backoff should not advance when spawn skipped"
-        );
+        assert!(!spawn_called.load(Ordering::SeqCst));
+        assert!(!result);
+        assert!(child_guard.is_none());
+        assert!(next_attempt.is_none());
+        assert_eq!(backoff, super::get_backoff_initial_secs());
 
         unsafe {
             std::env::remove_var("LIBAGENT_TRACE_AGENT_UDS");
         }
 
         let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn test_is_socket_in_use_detects_listener() {
+        let tmp = tempdir().unwrap();
+        let socket_path = tmp.path().join("monitor_socket.sock");
+
+        assert!(!super::is_socket_in_use(&socket_path));
+
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let handle = std::thread::spawn(move || {
+            let _ = listener.accept();
+        });
+
+        assert!(super::is_socket_in_use(&socket_path));
+        let _ = handle.join();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn test_is_socket_in_use_false_when_no_listener() {
+        let tmp = tempdir().unwrap();
+        let socket_path = tmp.path().join("monitor_socket_none.sock");
+
+        assert!(!super::is_socket_in_use(&socket_path));
+    }
+
+    #[test]
+    #[serial]
+    fn test_tick_process_spawn_error_advances_backoff() {
+        let spec = ProcessSpec::new("trace-agent", "binary".to_string(), Vec::new());
+        let mut child_guard: Option<std::process::Child> = None;
+        let mut backoff = get_backoff_initial_secs();
+        let mut next_attempt: Option<Instant> = None;
+        let spawn_called = Arc::new(AtomicBool::new(false));
+        let spawn_fn = {
+            let spawn_called = Arc::clone(&spawn_called);
+            move |_: &ProcessSpec| -> std::io::Result<std::process::Child> {
+                spawn_called.store(true, Ordering::SeqCst);
+                Err(std::io::Error::other("spawn failed"))
+            }
+        };
+
+        let result = super::tick_process(
+            &mut child_guard,
+            &spec,
+            &mut backoff,
+            &mut next_attempt,
+            &spawn_fn,
+        );
+
+        assert!(!result);
+        assert!(spawn_called.load(Ordering::SeqCst));
+        assert!(child_guard.is_none());
+        assert!(next_attempt.is_some());
+        let expected_backoff = (get_backoff_initial_secs() * 2).min(get_backoff_max_secs());
+        assert_eq!(backoff, expected_backoff);
+    }
+
+    #[test]
+    #[serial]
+    fn test_tick_process_skips_when_backoff_not_elapsed() {
+        let spec = ProcessSpec::new("trace-agent", "binary".to_string(), Vec::new());
+        let mut child_guard: Option<std::process::Child> = None;
+        let mut backoff = get_backoff_initial_secs();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut next_attempt = Some(deadline);
+        let spawn_called = Arc::new(AtomicBool::new(false));
+        let spawn_fn = {
+            let spawn_called = Arc::clone(&spawn_called);
+            move |_: &ProcessSpec| -> std::io::Result<std::process::Child> {
+                spawn_called.store(true, Ordering::SeqCst);
+                Err(std::io::Error::other("should not spawn during backoff"))
+            }
+        };
+
+        let result = super::tick_process(
+            &mut child_guard,
+            &spec,
+            &mut backoff,
+            &mut next_attempt,
+            &spawn_fn,
+        );
+
+        assert!(!result);
+        assert!(!spawn_called.load(Ordering::SeqCst));
+        assert!(child_guard.is_none());
+        assert_eq!(next_attempt, Some(deadline));
+        assert_eq!(backoff, get_backoff_initial_secs());
+    }
+
+    #[test]
+    #[serial]
+    fn test_tick_process_successful_spawn_sets_child() {
+        let spec = ProcessSpec::new("trace-agent", "binary".to_string(), Vec::new());
+        let mut child_guard: Option<std::process::Child> = None;
+        let mut backoff = get_backoff_initial_secs();
+        let mut next_attempt: Option<Instant> = Some(Instant::now());
+        let exe = std::env::current_exe().unwrap();
+        let spawn_fn = move |_: &ProcessSpec| -> std::io::Result<std::process::Child> {
+            Command::new(&exe)
+                .arg("--help")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        };
+
+        let result = super::tick_process(
+            &mut child_guard,
+            &spec,
+            &mut backoff,
+            &mut next_attempt,
+            &spawn_fn,
+        );
+
+        assert!(result);
+        assert!(child_guard.is_some());
+        assert_eq!(backoff, get_backoff_initial_secs());
+        assert!(next_attempt.is_none());
+
+        if let Some(mut child) = child_guard.take() {
+            let _ = child.wait();
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_tick_process_handles_exited_child_and_attempts_respawn() {
+        let spec = ProcessSpec::new("trace-agent", "binary".to_string(), Vec::new());
+        let exe = std::env::current_exe().unwrap();
+        let child = Command::new(&exe)
+            .arg("--help")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let mut child_guard = Some(child);
+        // Ensure the child process has exited so tick_process observes the completed status.
+        child_guard.as_mut().unwrap().wait().unwrap();
+        let mut backoff = get_backoff_initial_secs();
+        let mut next_attempt: Option<Instant> = None;
+        let spawn_called = Arc::new(AtomicBool::new(false));
+        let spawn_fn = {
+            let spawn_called = Arc::clone(&spawn_called);
+            move |_: &ProcessSpec| -> std::io::Result<std::process::Child> {
+                spawn_called.store(true, Ordering::SeqCst);
+                Err(std::io::Error::other("respawn failed"))
+            }
+        };
+
+        let result = super::tick_process(
+            &mut child_guard,
+            &spec,
+            &mut backoff,
+            &mut next_attempt,
+            &spawn_fn,
+        );
+
+        assert!(!result);
+        assert!(spawn_called.load(Ordering::SeqCst));
+        assert!(child_guard.is_none());
+        assert!(next_attempt.is_some());
     }
 }
