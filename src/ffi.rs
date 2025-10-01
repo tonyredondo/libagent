@@ -551,6 +551,17 @@ pub extern "C" fn SendDogStatsDMetric(payload_ptr: *const u8, payload_len: usize
 mod tests {
     use super::*;
 
+    use serial_test::serial;
+
+    #[cfg(unix)]
+    use std::io::{Read, Write};
+    #[cfg(unix)]
+    use std::os::unix::net::{UnixDatagram, UnixListener};
+    #[cfg(unix)]
+    use std::sync::{Arc, Mutex};
+    #[cfg(unix)]
+    use tempfile::tempdir;
+
     #[test]
     fn test_cstr_arg_null_pointer() {
         let result = unsafe { cstr_arg(std::ptr::null(), "test_arg") };
@@ -811,7 +822,130 @@ mod tests {
         assert_eq!(path_str, "/v0.7/traces"); // should have leading slash prepended
     }
 
+    #[cfg(unix)]
     #[test]
+    #[serial]
+    fn test_proxy_trace_agent_success() {
+        use std::env;
+        use std::ffi::CString;
+        use std::thread;
+
+        #[derive(Default)]
+        struct CallbackResult {
+            status: Option<u16>,
+            headers: Option<String>,
+            body: Option<Vec<u8>>,
+            error: Option<String>,
+        }
+
+        extern "C" fn response_callback(
+            status: u16,
+            headers_data: *const u8,
+            headers_len: usize,
+            body_data: *const u8,
+            body_len: usize,
+            user_data: *mut ::std::os::raw::c_void,
+        ) {
+            let result = unsafe { &mut *(user_data as *mut CallbackResult) };
+            result.status = Some(status);
+            if !headers_data.is_null() && headers_len > 0 {
+                let slice = unsafe { std::slice::from_raw_parts(headers_data, headers_len) };
+                result.headers = Some(String::from_utf8_lossy(slice).to_string());
+            }
+            if !body_data.is_null() && body_len > 0 {
+                let slice = unsafe { std::slice::from_raw_parts(body_data, body_len) };
+                result.body = Some(slice.to_vec());
+            }
+        }
+
+        extern "C" fn error_callback(
+            error_message: *const ::std::os::raw::c_char,
+            user_data: *mut ::std::os::raw::c_void,
+        ) {
+            let result = unsafe { &mut *(user_data as *mut CallbackResult) };
+            if !error_message.is_null() {
+                let msg = unsafe { CStr::from_ptr(error_message) }
+                    .to_string_lossy()
+                    .to_string();
+                result.error = Some(msg);
+            } else {
+                result.error = Some(String::new());
+            }
+        }
+
+        let tmp = tempdir().unwrap();
+        let sock_path = tmp.path().join("ffi_proxy.sock");
+
+        let listener = UnixListener::bind(&sock_path).unwrap();
+        let server = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let mut collected = Vec::new();
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            collected.extend_from_slice(&buf[..n]);
+                            if collected.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let response =
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nX-Test: yes\r\n\r\nsuccess";
+                let _ = stream.write_all(response);
+            }
+        });
+
+        manager::stop();
+        unsafe {
+            env::set_var("LIBAGENT_TRACE_AGENT_UDS", &sock_path);
+        }
+
+        let method = CString::new("POST").unwrap();
+        let path = CString::new("/ok").unwrap();
+        let headers = CString::new("Content-Type: text/plain").unwrap();
+        let body = b"payload";
+
+        let mut result_box = Box::new(CallbackResult::default());
+        let ctx_ptr = (&mut *result_box) as *mut CallbackResult as *mut _;
+        let response_callback_ptr: *const ::std::os::raw::c_void = response_callback as *const _;
+        let error_callback_ptr: *const ::std::os::raw::c_void = error_callback as *const _;
+
+        let rc = ProxyTraceAgent(
+            method.as_ptr(),
+            path.as_ptr(),
+            headers.as_ptr(),
+            body.as_ptr(),
+            body.len(),
+            response_callback_ptr,
+            error_callback_ptr,
+            ctx_ptr,
+        );
+
+        let _ = server.join();
+        unsafe {
+            env::remove_var("LIBAGENT_TRACE_AGENT_UDS");
+        }
+
+        assert_eq!(rc, 0);
+        assert!(result_box.error.is_none());
+        assert_eq!(result_box.status, Some(200));
+        assert!(
+            result_box
+                .headers
+                .as_ref()
+                .is_some_and(|h| h.contains("X-Test: yes"))
+        );
+        assert_eq!(result_box.body, Some(b"success".to_vec()));
+
+        manager::stop();
+    }
+
+    #[test]
+    #[serial]
     fn test_proxy_trace_agent_validation_error() {
         use std::ffi::CString;
         use std::sync::Mutex;
@@ -848,6 +982,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_proxy_trace_agent_request_error() {
         use std::ffi::CString;
         use std::sync::Mutex;
@@ -887,6 +1022,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_proxy_trace_agent_panic_handling() {
         use std::ffi::CString;
         use std::sync::Mutex;
@@ -923,6 +1059,68 @@ mod tests {
         // Even if it doesn't panic, it should handle potential panics gracefully
         // The return value could be -2 (request error) or -100 (panic), both are acceptable
         assert!(result == -2 || result == -100);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn test_send_dogstatsd_metric_success() {
+        use std::env;
+        use std::thread;
+
+        let tmp = tempdir().unwrap();
+        let sock_path = tmp.path().join("dogstatsd.sock");
+        let server = UnixDatagram::bind(&sock_path).unwrap();
+
+        let received = Arc::new(Mutex::new(None::<Vec<u8>>));
+        let recv_clone = Arc::clone(&received);
+        let handle = thread::spawn(move || {
+            let mut buf = [0u8; 256];
+            if let Ok((n, _addr)) = server.recv_from(&mut buf) {
+                *recv_clone.lock().unwrap() = Some(buf[..n].to_vec());
+            }
+        });
+
+        unsafe {
+            env::set_var("LIBAGENT_DOGSTATSD_UDS", &sock_path);
+        }
+
+        let payload = b"test.metric:1|c";
+        let rc = SendDogStatsDMetric(payload.as_ptr(), payload.len());
+        assert_eq!(rc, 0);
+
+        let _ = handle.join();
+        let data = received.lock().unwrap().clone().unwrap();
+        assert_eq!(data, payload);
+
+        unsafe {
+            env::remove_var("LIBAGENT_DOGSTATSD_UDS");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn test_send_dogstatsd_metric_send_error() {
+        use std::env;
+
+        unsafe {
+            env::set_var("LIBAGENT_DOGSTATSD_UDS", "/tmp/nonexistent_dogstatsd.sock");
+        }
+
+        let payload = b"test.metric:1|c";
+        let rc = SendDogStatsDMetric(payload.as_ptr(), payload.len());
+        assert_eq!(rc, -2);
+
+        unsafe {
+            env::remove_var("LIBAGENT_DOGSTATSD_UDS");
+        }
+    }
+
+    #[test]
+    fn test_send_dogstatsd_metric_validation_error() {
+        let rc = SendDogStatsDMetric(std::ptr::null(), 0);
+        assert_eq!(rc, -1);
     }
 
     #[test]

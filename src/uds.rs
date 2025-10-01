@@ -262,3 +262,195 @@ pub fn parse_header_lines(input: &str) -> Vec<(String, String)> {
 pub fn serialize_headers(headers: &[(String, String)]) -> String {
     crate::http::serialize_headers(headers)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    use serial_test::serial;
+
+    #[cfg(unix)]
+    use std::io::{Read, Write};
+    #[cfg(unix)]
+    use std::os::unix::net::{UnixListener, UnixStream};
+    #[cfg(unix)]
+    use std::thread;
+    #[cfg(unix)]
+    use std::time::Duration;
+    #[cfg(unix)]
+    use tempfile::tempdir;
+
+    #[cfg(unix)]
+    fn uds_path(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join(name);
+        (tmp, path)
+    }
+
+    #[cfg(unix)]
+    fn spawn_server<F>(path: std::path::PathBuf, handler: F) -> thread::JoinHandle<()>
+    where
+        F: FnOnce(UnixStream) + Send + 'static,
+    {
+        let listener = UnixListener::bind(&path).unwrap();
+        thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                handler(stream);
+            }
+        })
+    }
+
+    #[test]
+    fn parse_header_lines_roundtrip() {
+        let headers = vec![
+            ("Content-Type".to_string(), "text/plain".to_string()),
+            ("X-Test".to_string(), "1".to_string()),
+        ];
+        let serialized = serialize_headers(&headers);
+        let parsed = parse_header_lines(&serialized);
+        assert_eq!(parsed, headers);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_request_includes_defaults() {
+        let req = build_request(
+            "POST",
+            "/foo",
+            vec![("X-Test".to_string(), "1".to_string())],
+            b"payload",
+        );
+        let text = String::from_utf8(req).unwrap();
+        assert!(text.starts_with("POST /foo HTTP/1.1"));
+        assert!(text.contains("Content-Length: 7"));
+        assert!(text.contains("Host: unix"));
+        let parts: Vec<&str> = text.split("\r\n\r\n").collect();
+        assert!(parts.len() >= 2, "expected headers and body sections");
+        assert_eq!(parts.last().unwrap(), &"payload");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn request_over_uds_connection_error() {
+        let err = request_over_uds(
+            1,
+            "/tmp/libagent_missing.sock",
+            "GET",
+            "/",
+            Vec::new(),
+            &[],
+            Duration::from_millis(50),
+        )
+        .unwrap_err();
+        assert!(err.contains("connect error"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn request_over_uds_malformed_status_line() {
+        let (_tmp, path) = uds_path("status.sock");
+        let handle = spawn_server(path.clone(), |mut stream| {
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let response = b"HTTP/1.1 not-a-status\r\nContent-Length: 0\r\n\r\n";
+            let _ = stream.write_all(response);
+        });
+
+        let err = request_over_uds(
+            2,
+            path.to_str().unwrap(),
+            "GET",
+            "/",
+            Vec::new(),
+            &[],
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid status code"));
+        let _ = handle.join();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn request_over_uds_invalid_utf8_headers() {
+        let (_tmp, path) = uds_path("invalid-headers.sock");
+        let handle = spawn_server(path.clone(), |mut stream| {
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let response = b"HTTP/1.1 200 OK\r\nX-Test: \xFF\xFE\r\nContent-Length: 0\r\n\r\n";
+            let _ = stream.write_all(response);
+        });
+
+        let err = request_over_uds(
+            3,
+            path.to_str().unwrap(),
+            "GET",
+            "/",
+            Vec::new(),
+            &[],
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid utf-8"));
+        let _ = handle.join();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn request_over_uds_unexpected_eof_headers() {
+        let (_tmp, path) = uds_path("eof.sock");
+        let handle = spawn_server(path.clone(), |mut stream| {
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            // Close without sending headers to trigger EOF path
+        });
+
+        let err = request_over_uds(
+            4,
+            path.to_str().unwrap(),
+            "GET",
+            "/",
+            Vec::new(),
+            &[],
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert!(err.contains("unexpected EOF"));
+        let _ = handle.join();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn request_over_uds_binary_body() {
+        let (_tmp, path) = uds_path("binary-body.sock");
+        let handle = spawn_server(path.clone(), |mut stream| {
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let body = [0u8, 159, 146, 150];
+            let mut response = Vec::new();
+            response.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n");
+            response.extend_from_slice(&body);
+            let _ = stream.write_all(&response);
+        });
+
+        let resp = request_over_uds(
+            5,
+            path.to_str().unwrap(),
+            "GET",
+            "/",
+            Vec::new(),
+            &[],
+            Duration::from_millis(200),
+        )
+        .expect("binary body should still succeed");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, [0u8, 159, 146, 150]);
+        let _ = handle.join();
+    }
+}
