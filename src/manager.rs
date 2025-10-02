@@ -234,8 +234,17 @@ impl AgentManager {
     /// Ensure the trace-agent is ready to accept connections.
     /// This will block on the first call after a trace-agent spawn.
     pub fn ensure_trace_agent_ready(&self) -> Result<(), String> {
+        // Lock the ready flag first to avoid race conditions
+        let mut ready = lock_mutex(&self.trace_agent_ready);
+        
+        // Fast path: if already verified ready, return immediately
+        if *ready {
+            return Ok(());
+        }
+
         // Check if a trace-agent was actually spawned by libagent
         // If not (like in tests that use mock servers), skip readiness check
+        // We check this after locking ready to avoid TOCTOU race conditions
         let trace_child_none = lock_mutex(&self.trace_child).is_none();
         log_debug(&format!(
             "FFI: ensure_trace_agent_ready called, trace_child is_none={}",
@@ -243,12 +252,6 @@ impl AgentManager {
         ));
         if trace_child_none {
             log_debug("FFI: no trace-agent spawned by libagent, skipping readiness check");
-            return Ok(());
-        }
-
-        let mut ready = lock_mutex(&self.trace_agent_ready);
-        if *ready {
-            // Already verified ready, skip check
             return Ok(());
         }
 
