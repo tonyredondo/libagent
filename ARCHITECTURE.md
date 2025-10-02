@@ -19,9 +19,10 @@ This document explains how libagent is structured, how it manages the Agent and 
 - Monitor: `src/monitor.rs` implements the background monitoring thread with respawn logic, exponential backoff, and IPC resource conflict detection, reusing the configured IPC endpoint to decide whether it is safe to spawn.
 - Metrics: `src/metrics.rs` provides observability metrics tracking for process lifecycle and HTTP proxy statistics.
 - Configuration: `src/config.rs` contains defaults and environment variable overrides (parsed with shell-words).
-- FFI: `src/ffi.rs` exposes `Initialize`, `Stop`, `GetMetrics`, and the transport-agnostic trace-agent proxy; see `include/libagent.h`.
+- FFI: `src/ffi.rs` exposes `Initialize`, `Stop`, `GetMetrics`, `ProxyTraceAgent`, and `SendDogStatsDMetric`; see `include/libagent.h`.
 - UDS HTTP client: `src/uds.rs` implements a minimal HTTP/1.1 client over Unix Domain Sockets used by the proxy.
 - Windows Named Pipe client: `src/winpipe.rs` implements HTTP/1.1 over Windows Named Pipes using overlapped I/O with explicit cancellation to honour per-request timeouts.
+- DogStatsD client: `src/dogstatsd.rs` implements a DogStatsD metrics client over Unix Domain Sockets (datagrams) and Windows Named Pipes.
 
 ## Lifecycle
 1. Initialize: `initialize()` sets up a singleton `AgentManager` in a global cell. The global lock is held through the initial `start()` so concurrent callers all share the same manager instance, then the monitor thread is launched.
@@ -197,8 +198,8 @@ If the parent application is killed forcefully (SIGKILL, crash, etc.):
 - Resource conflict prevention: Smart spawning prevents multiple instances from competing for IPC resources.
 
 ## FFI Surface
-- C API: `Initialize(void)`, `Stop(void)`, `GetMetrics()`, and `ProxyTraceAgent(...)` (see `include/libagent.h`).
-- `GetMetrics()` returns a `MetricsData` struct with comprehensive metrics (process lifecycle, HTTP proxy stats, response times).
+- C API: `Initialize(void)`, `Stop(void)`, `GetMetrics()`, `ProxyTraceAgent(...)`, and `SendDogStatsDMetric(...)` (see `include/libagent.h`).
+- `GetMetrics()` returns a `MetricsData` struct with comprehensive metrics (process lifecycle, HTTP proxy stats, DogStatsD metrics, response times).
 - Rust nightly 2024 uses `#[unsafe(no_mangle)]` on FFI exports to match the current toolchain.
 
 ### Trace Agent Proxy
@@ -248,6 +249,7 @@ If the parent application is killed forcefully (SIGKILL, crash, etc.):
   - Unix: DogStatsD proxy (counters, gauges, histograms, distributions, batching) in `tests/dogstatsd_proxy.rs`.
   - Windows: sanity check that Job-based shutdown works in `tests/windows_sanity.rs`.
   - Windows: Named Pipe proxy (basic + chunked) in `tests/windows_pipe_proxy.rs`.
+  - Windows: DogStatsD proxy (basic functionality) in `tests/dogstatsd_windows.rs`.
 
 ## When to Update This Doc
 - Changing process lifecycle, spawning, shutdown, monitoring, or logging semantics across `src/manager.rs`, `src/process.rs`, `src/shutdown.rs`, `src/monitor.rs`, or `src/logging.rs`.

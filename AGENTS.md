@@ -3,9 +3,9 @@
 ## Project Structure & Module Organization
 - For a deeper architectural description (lifecycle, backoff, platform specifics), see ARCHITECTURE.md.
 - `src/` — core library code:
-  - `lib.rs` (public API: `initialize`, `stop`), `ffi.rs` (C FFI: `Initialize`, `Stop`, `ProxyTraceAgent`, `GetMetrics`), `manager.rs` (process lifecycle orchestration), `config.rs` (constants/env overrides), `http.rs` (shared HTTP parsing utilities), `uds.rs` (HTTP-over-UDS client), `winpipe.rs` (HTTP-over-Windows-Named-Pipe client).
+  - `lib.rs` (public API: `initialize`, `stop`), `ffi.rs` (C FFI: `Initialize`, `Stop`, `ProxyTraceAgent`, `GetMetrics`, `SendDogStatsDMetric`), `manager.rs` (process lifecycle orchestration), `config.rs` (constants/env overrides), `http.rs` (shared HTTP parsing utilities), `uds.rs` (HTTP-over-UDS client), `winpipe.rs` (HTTP-over-Windows-Named-Pipe client), `dogstatsd.rs` (DogStatsD metrics client over UDS/Named Pipe).
   - `logging.rs` (centralized logging functionality), `process.rs` (platform-specific process spawning), `shutdown.rs` (platform-specific process termination), `monitor.rs` (background monitoring thread), `metrics.rs` (observability metrics tracking).
-- `tests/` — integration tests (`respawn.rs`, `idempotent.rs`, `start_stop_unix.rs`, `uds_proxy.rs`, `windows_pipe_proxy.rs`, `windows_sanity.rs`) plus helpers in `tests/common/`.
+- `tests/` — integration tests (`respawn.rs`, `idempotent.rs`, `start_stop_unix.rs`, `uds_proxy.rs`, `windows_pipe_proxy.rs`, `windows_sanity.rs`, `dogstatsd_proxy.rs`, `dogstatsd_windows.rs`) plus helpers in `tests/common/`.
 - `.github/workflows/ci.yml` — GitHub Actions (Linux, macOS, Windows; nightly toolchain).
 - `target/` — build artifacts.
 
