@@ -236,7 +236,7 @@ impl AgentManager {
     pub fn ensure_trace_agent_ready(&self) -> Result<(), String> {
         // Lock the ready flag first to avoid race conditions
         let mut ready = lock_mutex(&self.trace_agent_ready);
-        
+
         // Fast path: if already verified ready, return immediately
         if *ready {
             return Ok(());
