@@ -205,6 +205,9 @@ jobs:
           mkdir -p dist libagent-${{ matrix.platform }}-${{ matrix.arch }}
           cp bundle/lib/* libagent-${{ matrix.platform }}-${{ matrix.arch }}/
           cp bundle/agent/* libagent-${{ matrix.platform }}-${{ matrix.arch }}/
+          if [[ -f libagent-${{ matrix.platform }}-${{ matrix.arch }}/agentless-agent ]]; then
+            chmod +x libagent-${{ matrix.platform }}-${{ matrix.arch }}/agentless-agent
+          fi
           tar -czf dist/libagent-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz \
             libagent-${{ matrix.platform }}-${{ matrix.arch }}
 
