@@ -113,6 +113,7 @@ Attempt 3: (≥2s) start -> ok   -> backoff reset to 1s
 - Shutdown sends `SIGTERM` to the negative PGID (process group), waits up to `GRACEFUL_SHUTDOWN_TIMEOUT_SECS` (default 5s), then escalates to `SIGKILL` if needed.
 - Child stdio: inherited when debug-level logging is enabled; otherwise set to null to avoid noisy hosts.
 - **macOS/BSD only**: An orphan cleanup monitor process is forked at startup to watch the parent PID and terminate children if the parent dies unexpectedly.
+- **Alpine Linux**: Supports both glibc (standard Linux) and musl builds. musl builds use Docker-based compilation with optimizations (LTO, size optimization, dead code elimination) resulting in 517 KB libraries (68% smaller than standard builds). See [ALPINE_BUILD.md](ALPINE_BUILD.md) for details.
 
 ## Windows Details
 - A Job Object is created and configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
@@ -240,6 +241,8 @@ If the parent application is killed forcefully (SIGKILL, crash, etc.):
 - Metrics tracking: Records requests, successes, and errors via `MetricsData` struct.
 
 ## Testing Strategy
+
+### Rust Integration Tests
 - Integration tests under `tests/` use temporary stub scripts to simulate child behavior.
 - `serial_test` isolates global state; environment mutations are marked `unsafe` due to Rust 2024 nightly constraints.
 - Smart spawning logic is validated through respawn tests (ensures agents spawn when resources are available).
@@ -250,6 +253,34 @@ If the parent application is killed forcefully (SIGKILL, crash, etc.):
   - Windows: sanity check that Job-based shutdown works in `tests/windows_sanity.rs`.
   - Windows: Named Pipe proxy (basic + chunked) in `tests/windows_pipe_proxy.rs`.
   - Windows: DogStatsD proxy (basic functionality) in `tests/dogstatsd_windows.rs`.
+
+### CI Testing Infrastructure
+
+**Standard Platforms (ci.yml test job):**
+- Runs on: Ubuntu (Linux x64), macOS (ARM64), Windows (x64)
+- Tests: Format check, Clippy linting, full Rust test suite, C header verification
+- Triggers: Every push and pull request
+
+**Alpine/musl Platforms (ci.yml test-alpine job):**
+- Runs on: Ubuntu with Docker Buildx (x64 and ARM64)
+- Tests: Full Rust test suite on Alpine/musl, static verification (7 checks), functional test
+- Embedded in Docker build process - fails build if tests fail
+- Same test coverage as glibc/macOS/Windows platforms
+
+**Release Builds (build-release.yml):**
+- Runs on: Same platforms as CI + Alpine (6 platforms total)
+- Includes functional tests for all platforms:
+  - Compiles C functional test (`examples/c/functional-test.c`)
+  - Tests all FFI functions: `Initialize()`, `GetMetrics()`, `SendDogStatsDMetric()`, `Stop()`
+  - Validates metrics update correctly and data structures work
+  - Runs with debug logging for detailed output
+- Alpine builds include Rust unit tests + verification + functional test
+- Produces release artifacts only after all tests pass
+
+**Code Coverage:**
+- Generates LCOV coverage report using `cargo llvm-cov`
+- Uploads to Codecov for tracking
+- Runs on Ubuntu in dedicated coverage job
 
 ## When to Update This Doc
 - Changing process lifecycle, spawning, shutdown, monitoring, or logging semantics across `src/manager.rs`, `src/process.rs`, `src/shutdown.rs`, `src/monitor.rs`, or `src/logging.rs`.

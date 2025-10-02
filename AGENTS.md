@@ -6,10 +6,19 @@
   - `lib.rs` (public API: `initialize`, `stop`), `ffi.rs` (C FFI: `Initialize`, `Stop`, `ProxyTraceAgent`, `GetMetrics`, `SendDogStatsDMetric`), `manager.rs` (process lifecycle orchestration), `config.rs` (constants/env overrides), `http.rs` (shared HTTP parsing utilities), `uds.rs` (HTTP-over-UDS client), `winpipe.rs` (HTTP-over-Windows-Named-Pipe client), `dogstatsd.rs` (DogStatsD metrics client over UDS/Named Pipe).
   - `logging.rs` (centralized logging functionality), `process.rs` (platform-specific process spawning), `shutdown.rs` (platform-specific process termination), `monitor.rs` (background monitoring thread), `metrics.rs` (observability metrics tracking).
 - `tests/` — integration tests (`respawn.rs`, `idempotent.rs`, `start_stop_unix.rs`, `uds_proxy.rs`, `windows_pipe_proxy.rs`, `windows_sanity.rs`, `dogstatsd_proxy.rs`, `dogstatsd_windows.rs`) plus helpers in `tests/common/`.
-- `.github/workflows/ci.yml` — GitHub Actions (Linux, macOS, Windows; nightly toolchain).
+- `.github/workflows/ci.yml` — GitHub Actions CI (Linux glibc, Linux musl/Alpine, macOS, Windows; nightly toolchain; includes Alpine Docker builds with full test suite).
+- `.github/workflows/build-release.yml` — Release builds (all 6 platforms including Alpine/musl via Docker; includes functional tests for all platforms).
+- `Dockerfile.alpine-arm64`, `Dockerfile.alpine-x64` — Alpine Linux builds (musl, optimized).
+- `build-alpine-all.sh` — Convenience script for local Alpine builds.
+- `examples/c/functional-test.c` — Cross-platform C functional test (Linux glibc, macOS, Windows).
+- `examples/c/alpine-functional-test.c` — Alpine/musl-specific functional test (embedded in Docker builds).
+- `examples/` — Language examples (C, Go, Java, .NET, Node.js, Python, Ruby) demonstrating complete FFI API usage.
 - `target/` — build artifacts.
+- `alpine-build/` — Alpine/musl build outputs (gitignored).
 
 ## Build, Test, and Development Commands
+
+### Standard Builds
 - Install nightly: `rustup toolchain install nightly`.
 - Build (debug/release): `cargo +nightly build` / `cargo +nightly build --release`.
 - Test (show logs): `LIBAGENT_LOG=debug cargo +nightly test -- --nocapture`.
@@ -18,6 +27,20 @@
 
 Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 
+### Alpine Linux Builds (musl)
+- Build both architectures: `./build-alpine-all.sh`
+- Build ARM64 only: `docker build -f Dockerfile.alpine-arm64 -t libagent-alpine-arm64 .`
+- Build x64 only: `docker buildx build --platform linux/amd64 -f Dockerfile.alpine-x64 -t libagent-alpine-x64 --load .`
+
+Outputs are in `alpine-build/musl-{arm64,amd64}/libagent.so` (517 KB each, optimized).
+
+**Alpine build features:**
+- Full LTO and size optimizations (68% smaller than standard builds)
+- Rust unit tests run during Docker build (same tests as other platforms)
+- 7 automated static verification checks (architecture, linkage, symbols, etc.)
+- Functional C test runs during Docker build with debug logging
+- See [ALPINE_BUILD.md](ALPINE_BUILD.md) for details
+
 ## Coding Style & Naming Conventions
 - Rust style with `rustfmt` defaults (4-space indent, imports grouped).
 - Naming: `snake_case` for fns/vars; `CamelCase` for types; modules in `snake_case`.
@@ -25,13 +48,27 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 - Keep modules focused; prefer small helpers in `manager.rs` over sprawling functions. `initialize()` is thread-safe; feel free to call it from multiple threads so long as you avoid re-entrant env mutation races in your own code.
 
 ## Testing Guidelines
+
+### Rust Integration Tests
 - Integration tests live in `tests/` and use `serial_test` to isolate global state. Mark new stateful tests with `#[serial]`.
 - Prefer integration-style tests that exercise `initialize`/`stop` and respawn/backoff behavior. Use `tempfile` and helpers in `tests/common` to avoid touching the real system.
 - Cross‑platform: Unix tests rely on `/bin/sh`; Windows tests use PowerShell.
-- Run locally with `cargo +nightly test`; CI runs on all three OSes.
+- Run locally with `cargo +nightly test`; CI runs on all platforms (Linux glibc, Linux musl/Alpine, macOS, Windows).
 - Rust 2024/`nightly`: environment mutations are `unsafe`. Wrap `env::set_var`/`env::remove_var` in `unsafe { ... }` in tests, and keep tests `#[serial]` to avoid races.
- - UDS proxy tests: see `tests/uds_proxy.rs` (basic and chunked). Tests skip gracefully if UDS bind is denied by the environment.
- - Windows Named Pipe proxy tests: see `tests/windows_pipe_proxy.rs` (basic and chunked).
+- UDS proxy tests: see `tests/uds_proxy.rs` (basic and chunked). Tests skip gracefully if UDS bind is denied by the environment.
+- Windows Named Pipe proxy tests: see `tests/windows_pipe_proxy.rs` (basic and chunked).
+- Alpine/musl: Full Rust test suite runs in Docker during Alpine builds (same coverage as glibc/macOS/Windows).
+
+### Functional Tests
+- C functional tests verify FFI works correctly across all platforms in both CI and release builds.
+- Located in `examples/c/`:
+  - `functional-test.c` - Cross-platform test (Linux glibc, macOS, Windows)
+  - `alpine-functional-test.c` - Alpine/musl-specific test (embedded in Docker builds)
+- Tests all FFI functions: `Initialize()`, `GetMetrics()`, `SendDogStatsDMetric()`, `Stop()`
+- Validates metrics update correctly and data structures work across language boundaries
+- Runs automatically in CI (`ci.yml` for Alpine, `build-release.yml` for all platforms)
+- Executes with `LIBAGENT_LOG=debug` for detailed output
+- If adding new FFI functions, update both functional tests to maintain coverage
 
 ## Commit & Pull Request Guidelines
 - Use Conventional Commits (e.g., `feat:`, `fix:`, `test:`, `chore:`). Keep subject ≤72 chars; add a focused body when helpful.
@@ -93,3 +130,4 @@ Outputs include a `cdylib` for embedding and an `rlib` for Rust linking.
 
 ## Platform Notes
 - Windows process management uses Job Objects for reliable termination of the child tree. For compatibility across `windows-sys` versions, `CreateJobObjectW` is declared via an `unsafe extern "system"` block; do not change its import path without verifying CI across OS/toolchains.
+- Alpine Linux builds use Docker-based compilation with musl target. Rust doesn't support `cdylib` on musl, so we build a `staticlib` and wrap it with `gcc --whole-archive` to create the shared library. The build includes comprehensive verification (8 checks) and functional tests. See `Dockerfile.alpine-{arm64,x64}` and [ALPINE_BUILD.md](ALPINE_BUILD.md) for implementation details.

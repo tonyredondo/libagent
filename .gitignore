@@ -1,1 +1,4 @@
 /target
+
+# Alpine build output
+/alpine-build/

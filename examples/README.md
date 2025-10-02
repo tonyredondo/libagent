@@ -9,10 +9,30 @@ These examples demonstrate the complete libagent FFI API including:
 
 All examples show how to proxy HTTP requests and send metrics over local IPC transport to the Datadog trace-agent and DogStatsD.
 
+## Functional Tests
+
+The repository includes automated functional tests in C that verify the library works correctly across all platforms:
+
+### **`examples/c/functional-test.c`** - Cross-platform functional test
+- Tests all FFI functions (Initialize, GetMetrics, SendDogStatsDMetric, Stop)
+- Verifies metrics update over time and data structures are correct
+- Runs automatically in CI for all platforms (Linux glibc, macOS, Windows)
+- With debug logging: `LIBAGENT_LOG=debug`
+
+### **`examples/c/alpine-functional-test.c`** - Alpine/musl-specific test
+- Same functionality as the generic test
+- Runs during Docker build for Alpine x64 and ARM64
+- Ensures optimized musl builds work correctly
+
+These tests provide confidence that the library functions correctly on all supported platforms and architectures.
+
 Prerequisites
-- Build the library: `cargo +nightly build` (or `--release`).
+- Build the library:
+  - Standard: `cargo +nightly build` (or `--release`)
+  - Alpine: `./build-alpine-all.sh` (produces `alpine-build/musl-{arm64,amd64}/libagent.so`)
 - Ensure the dynamic library can be found by your loader:
-  - Linux: export `LD_LIBRARY_PATH=target/debug` (or `target/release`).
+  - Linux (glibc): export `LD_LIBRARY_PATH=target/debug` (or `target/release`)
+  - Alpine (musl): export `LD_LIBRARY_PATH=alpine-build/musl-amd64` (or `musl-arm64`)
   - macOS: export `DYLD_LIBRARY_PATH=target/debug` (or `target/release`).
 - Socket path (Unix): set `LIBAGENT_TRACE_AGENT_UDS` to your trace-agent UDS path if not using the default `/tmp/datadog_libagent.socket`. The same value is used when libagent spawns its managed trace-agent, checks readiness, and issues proxy calls.
 - Windows Named Pipe: set `LIBAGENT_TRACE_AGENT_PIPE` to the pipe name (default `datadog-libagent`). The override is shared by process spawning, readiness checks, and proxy calls. Uses a reusable worker pool (4 workers by default) to handle concurrent requests efficiently under high load, with per-request timeout support (default: 50 seconds).
@@ -25,6 +45,7 @@ Notes
 - **Low-level callback API**: Still available for advanced use cases requiring direct callback control
 - Uses callback-based API internally - no manual memory management required!
 - Cross-platform: works on Unix (UDS) and Windows (Named Pipes) platforms.
+- **Alpine Linux**: All examples work with Alpine musl builds. Use `LD_LIBRARY_PATH=alpine-build/musl-amd64` (or `musl-arm64`) and the libraries are fully compatible with glibc examples.
 - **Trace Agent Configuration**: libagent automatically configures the trace-agent for IPC-only operation (TCP port disabled) using custom paths to prevent conflicts with system installations.
 - **Smart Process Management**: libagent only spawns agents when IPC resources are available and no existing Datadog agents are detected, ensuring cooperation rather than competition.
 

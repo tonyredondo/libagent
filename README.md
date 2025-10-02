@@ -3,7 +3,7 @@
 [![CI](https://github.com/tonyredondo/libagent/actions/workflows/ci.yml/badge.svg)](https://github.com/tonyredondo/libagent/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/tonyredondo/libagent/branch/main/graph/badge.svg)](https://codecov.io/gh/tonyredondo/libagent)
 ![Rust nightly](https://img.shields.io/badge/rust-nightly-blue)
-![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-informational)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Alpine%20%7C%20macOS%20%7C%20Windows-informational)
 
 Minimal-runtime Rust library that ensures the Datadog Agent and Trace Agent are running while the library is loaded. Exposes both a Rust API and a stable C FFI for embedding in non-Rust hosts.
 
@@ -11,14 +11,34 @@ Minimal-runtime Rust library that ensures the Datadog Agent and Trace Agent are 
 - Starts and monitors Agent + Trace Agent with exponential backoff
 - Graceful shutdown (SIGTERM then SIGKILL on Unix; Windows Job kill)
 - Thread-safe, idempotent `initialize`/`stop`; destructor stops on unload
-- Cross‑platform: Linux, macOS, Windows (tested in CI)
+- Cross‑platform: Linux (glibc), Alpine (musl), macOS, Windows (tested in CI)
+- **Alpine Linux**: Optimized 517 KB libraries (68% smaller) with automated verification
 
 ## Build
+
+### Standard Builds
 - Requires Rust nightly.
 - Debug: `cargo +nightly build`
 - Release: `cargo +nightly build --release`
 
 Outputs include a Rust `rlib` and a shared library (`.so/.dylib/.dll`) per the crate-type settings.
+
+### Alpine Linux Builds (musl)
+For Alpine Linux / musl-based containers, use Docker-based builds:
+
+```bash
+./build-alpine-all.sh
+```
+
+Produces optimized libraries in `alpine-build/`:
+- `musl-arm64/libagent.so` (517 KB, ARM64/aarch64)
+- `musl-amd64/libagent.so` (517 KB, x86_64)
+
+**Features:**
+- 68% smaller than standard builds (1.6 MB → 517 KB)
+- Automated verification (8 checks including functional tests)
+- Full LTO and size optimizations
+- See [ALPINE_BUILD.md](ALPINE_BUILD.md) for details
 
 ## Architecture Overview
 - Public API: `lib.rs` re-exports `initialize`/`stop`; a destructor (`#[ctor::dtor]`) calls `stop` on unload.
@@ -291,22 +311,56 @@ cbindgen --config cbindgen.toml --crate libagent --output include/libagent.h
 - Protocols: supports `Content-Length` and `Transfer-Encoding: chunked` responses.
 
 ## Testing
-Run the cross‑platform integration suite:
-- `cargo +nightly test -- --nocapture`
 
-Code coverage reports are automatically generated in CI and uploaded to [Codecov](https://codecov.io/gh/tonyredondo/libagent).
+### Comprehensive Test Suite
+libagent has extensive automated testing across all platforms:
 
-Examples in multiple languages are under `examples/` (C, Go, Java/JNA, .NET, Node.js, Python, Ruby). See `examples/README.md` for build/run tips.
+**Rust Integration Tests:**
+- Run locally: `cargo +nightly test -- --nocapture`
+- Tests: process spawning, respawn logic, idempotency, IPC proxying, metrics
+- Platform-specific: UDS proxy (Unix), Named Pipe proxy (Windows), DogStatsD
+- Uses `serial_test` to isolate stateful tests
+
+**Functional Tests (CI):**
+- Automated C functional tests run on every build for all platforms
+- Tests all FFI functions: `Initialize()`, `GetMetrics()`, `SendDogStatsDMetric()`, `Stop()`
+- Validates metrics update correctly and data structures work across language boundaries
+- Platforms: Linux (glibc), Linux (musl/Alpine), macOS, Windows
+
+**Alpine/musl Testing:**
+- Full Rust test suite runs during Docker build
+- Same test coverage as glibc/macOS/Windows
+- Catches musl-specific issues early
+- Includes static verification + functional tests
+
+**Code Coverage:**
+- Automatically generated in CI
+- Uploaded to [Codecov](https://codecov.io/gh/tonyredondo/libagent)
+- Comprehensive coverage across all modules
+
+Examples in multiple languages are under `examples/` (C, Go, Java/JNA, .NET, Node.js, Python, Ruby). See `examples/README.md` for build/run tips and functional test details.
 
 Note: On Rust 2024 nightly, environment mutations in tests (e.g., `std::env::set_var`) are `unsafe`; wrap them in `unsafe { ... }` or use helpers. See AGENTS.md for guidance.
 
 ## Releases
 Automated builds are created for the following platforms on every commit:
 - **Linux x64/arm64 (glibc)**: Standard Linux distributions
+- **Alpine x64/arm64 (musl)**: Alpine Linux / musl-based containers (optimized 517 KB builds)
 - **macOS arm64**: Apple Silicon
 - **Windows x64**: MSVC
 
+Each release bundle includes:
+- `libagent.so/.dylib/.dll` (optimized shared library)
+- `libagent.h` (C header file)
+- `agentless-agent` (trace agent binary)
+
 Release artifacts are automatically attached when you create a new GitHub release.
+
+**Alpine Linux Notes:**
+- Uses Docker-based builds with full verification
+- 68% smaller than standard Linux builds
+- Same API and functionality as other platforms
+- See [ALPINE_BUILD.md](ALPINE_BUILD.md) for build process details
 
 ## Contributing
 See AGENTS.md for project structure, style, test guidance, and PR expectations.

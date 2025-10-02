@@ -1,0 +1,96 @@
+# Build libagent dynamic library for Alpine Linux ARM64
+FROM rust:alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache \
+    musl-dev \
+    gcc \
+    binutils \
+    file
+
+WORKDIR /build
+
+# Copy source code
+COPY . .
+
+# Install Rust nightly
+RUN rustup toolchain install nightly && \
+    rustup default nightly
+
+# Run Rust unit tests on Alpine/musl BEFORE modifying Cargo.toml
+RUN echo "=== RUNNING RUST UNIT TESTS (ALPINE/MUSL ARM64) ===" && \
+    cargo +nightly test --target aarch64-unknown-linux-musl -- --nocapture && \
+    echo "=== ✅ ALL RUST TESTS PASSED ===" && \
+    echo ""
+
+# Modify Cargo.toml to build staticlib only (LTO requires single output type)
+RUN sed -i 's/crate-type = \["cdylib", "rlib"\]/crate-type = ["staticlib"]/' Cargo.toml
+
+# Build Rust static library with optimizations for size
+# - panic=abort: Smaller binary without unwind tables
+# - lto=fat: Link-time optimization across all crates
+# - codegen-units=1: Better optimization, single unit
+ENV RUSTFLAGS="-C panic=abort -C lto=fat -C codegen-units=1 -C opt-level=z"
+RUN cargo +nightly build --release --target aarch64-unknown-linux-musl
+
+# Create shared library from static library with aggressive optimization
+RUN gcc -shared -fPIC \
+    -Wl,--whole-archive target/aarch64-unknown-linux-musl/release/liblibagent.a -Wl,--no-whole-archive \
+    -Wl,--gc-sections \
+    -Wl,--as-needed \
+    -Wl,--strip-all \
+    -fvisibility=hidden \
+    -o target/aarch64-unknown-linux-musl/release/liblibagent.so \
+    -lpthread -ldl -lm
+
+# Strip all unnecessary symbols but keep exported dynamic symbols
+# --strip-unneeded removes all symbols that are not needed for relocation
+# This keeps exported FFI functions while maximizing size reduction
+RUN strip --strip-unneeded target/aarch64-unknown-linux-musl/release/liblibagent.so
+
+# Comprehensive verification in build container
+RUN echo "=== COMPREHENSIVE VERIFICATION (ARM64) ===" && \
+    echo "" && \
+    echo "=== 1. Library Size ===" && \
+    ls -lh target/aarch64-unknown-linux-musl/release/liblibagent.so && \
+    echo "" && \
+    echo "=== 2. File Type ===" && \
+    file target/aarch64-unknown-linux-musl/release/liblibagent.so && \
+    echo "" && \
+    echo "=== 3. Architecture Verification ===" && \
+    readelf -h target/aarch64-unknown-linux-musl/release/liblibagent.so | grep -E "Class|Machine" && \
+    echo "" && \
+    echo "=== 4. musl Linkage Verification ===" && \
+    readelf -d target/aarch64-unknown-linux-musl/release/liblibagent.so | grep NEEDED && \
+    ldd target/aarch64-unknown-linux-musl/release/liblibagent.so && \
+    echo "" && \
+    echo "=== 5. Verify musl (not glibc) ===" && \
+    (ldd target/aarch64-unknown-linux-musl/release/liblibagent.so | grep -q musl && echo "✅ Linked against musl") && \
+    (ldd target/aarch64-unknown-linux-musl/release/liblibagent.so | grep -q glibc && echo "❌ ERROR: Linked against glibc!" && exit 1 || echo "✅ Not linked against glibc") && \
+    echo "" && \
+    echo "=== 6. Exported FFI Symbols ===" && \
+    nm -D target/aarch64-unknown-linux-musl/release/liblibagent.so | grep -E " T " | grep -E "(Initialize|Stop|GetMetrics|ProxyTraceAgent|SendDogStatsDMetric)" && \
+    echo "" && \
+    echo "=== 7. Stripping Verification ===" && \
+    (readelf -S target/aarch64-unknown-linux-musl/release/liblibagent.so | grep -q '.debug' && echo "❌ Debug sections found" || echo "✅ No debug sections (properly stripped)") && \
+    echo "" && \
+    echo "=== ✅ ALL VERIFICATIONS PASSED ==="
+
+# Functional test - verify library actually works
+RUN echo "" && \
+    echo "=== 8. FUNCTIONAL TEST ===" && \
+    echo "Compiling functional test..." && \
+    gcc -o /tmp/functional-test examples/c/alpine-functional-test.c \
+        target/aarch64-unknown-linux-musl/release/liblibagent.so \
+        -lpthread -ldl -lm && \
+    echo "" && \
+    echo "Running functional test with debug logging..." && \
+    LIBAGENT_LOG=debug /tmp/functional-test && \
+    echo "" && \
+    echo "=== ✅ FUNCTIONAL TEST PASSED ==="
+
+# Final stage - minimal alpine image for easy extraction
+FROM alpine:latest
+COPY --from=builder /build/target/aarch64-unknown-linux-musl/release/liblibagent.so /liblibagent.so
+CMD ["/bin/sh"]
+

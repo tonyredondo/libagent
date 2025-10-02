@@ -52,6 +52,37 @@ jobs:
       - name: Verify C header up to date
         run: git diff --ignore-cr-at-eol --exit-code -- include/libagent.h
 
+  test-alpine:
+    name: test-alpine (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            dockerfile: Dockerfile.alpine-x64
+            platform: linux/amd64
+          - arch: arm64
+            dockerfile: Dockerfile.alpine-arm64
+            platform: linux/arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and test Alpine library
+        run: |
+          echo "Building Alpine ${{ matrix.arch }} library with integrated tests..."
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            -f ${{ matrix.dockerfile }} \
+            -t libagent-alpine-${{ matrix.arch }}-test \
+            --load \
+            .
+          echo "✅ Alpine ${{ matrix.arch }} build and functional tests passed!"
+
   coverage:
     name: coverage (ubuntu-latest)
     runs-on: ubuntu-latest

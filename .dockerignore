@@ -1,0 +1,26 @@
+# Build artifacts
+target/
+alpine-build-output/
+*.so
+*.dylib
+*.a
+*.rlib
+*.d
+
+# Docker test files
+Dockerfile.*
+*.sh
+
+# Git
+.git/
+.github/
+
+# IDE
+.vscode/
+.idea/
+
+# Other
+*.profraw
+profdata
+llvm-cov-target/
+
