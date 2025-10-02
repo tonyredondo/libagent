@@ -57,11 +57,11 @@ jobs:
         run: |
           mkdir -p artifacts
           if [[ "${{ matrix.target }}" == *"windows"* ]]; then
-            cp target/${{ matrix.target }}/release/libagent.dll artifacts/ 2>/dev/null || true
+            cp target/${{ matrix.target }}/release/libagent.dll artifacts/libagent.dll 2>/dev/null || true
           elif [[ "${{ matrix.target }}" == *"darwin"* ]]; then
-            cp target/${{ matrix.target }}/release/liblibagent.dylib artifacts/ 2>/dev/null || true
+            cp target/${{ matrix.target }}/release/liblibagent.dylib artifacts/libagent.dylib 2>/dev/null || true
           else
-            cp target/${{ matrix.target }}/release/liblibagent.so artifacts/ 2>/dev/null || true
+            cp target/${{ matrix.target }}/release/liblibagent.so artifacts/libagent.so 2>/dev/null || true
           fi
           cp include/libagent.h artifacts/
 
