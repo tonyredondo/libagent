@@ -230,8 +230,12 @@ jobs:
           pattern: libagent-*
           path: release-artifacts
           merge-multiple: false
+      - name: List packages
+        run: |
+          ls -R release-artifacts
+
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: release-artifacts/libagent-*.tar.gz
+          files: release-artifacts/**/libagent-*.tar.gz
           token: ${{ secrets.GITHUB_TOKEN }}
