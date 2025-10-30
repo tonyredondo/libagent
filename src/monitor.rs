@@ -154,6 +154,121 @@ fn is_remote_config_available() -> bool {
     false
 }
 
+/// Checks if a spawn should be attempted, updating child state if needed.
+/// This runs with locks held and should complete quickly.
+/// Returns true if spawn should be attempted, false otherwise.
+fn should_attempt_spawn(
+    child_guard: &mut Option<std::process::Child>,
+    spec: &ProcessSpec,
+    _backoff_secs_guard: &mut u64, // Not used here, but needed for API consistency
+    next_attempt_guard: &mut Option<Instant>,
+) -> bool {
+    // If child exists, see if it exited
+    if let Some(child) = child_guard.as_mut() {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                log_warn(&format!(
+                    "{} exited with status {:?}. Will respawn.",
+                    spec.name, status
+                ));
+                record_process_failure(spec);
+                *child_guard = None;
+            }
+            Ok(None) => {
+                return false; // still running
+            }
+            Err(err) => {
+                log_warn(&format!(
+                    "Failed to check {} status: {}. Treating as not running.",
+                    spec.name, err
+                ));
+                record_process_failure(spec);
+                *child_guard = None;
+            }
+        }
+    }
+
+    // Not running; check backoff window
+    let now = Instant::now();
+    if next_attempt_guard.as_ref().is_some_and(|&next| now < next) {
+        return false;
+    }
+
+    // Check if we should spawn based on resource availability
+    match spec.name {
+        "trace-agent" => {
+            #[cfg(unix)]
+            {
+                let socket_path = std::path::PathBuf::from(get_trace_agent_uds_path());
+                if !socket_path.as_os_str().is_empty() && is_socket_in_use(&socket_path) {
+                    log_debug(
+                        "Skipping trace-agent spawn - socket already in use by another process",
+                    );
+                    return false;
+                }
+            }
+            #[cfg(windows)]
+            {
+                let pipe_name = get_trace_agent_pipe_name();
+                if !pipe_name.trim().is_empty() && is_pipe_in_use(&pipe_name) {
+                    log_debug(
+                        "Skipping trace-agent spawn - pipe already in use by another process",
+                    );
+                    return false;
+                }
+            }
+        }
+        "agent" => {
+            if is_remote_config_available() {
+                log_debug(
+                    "Skipping agent spawn - remote configuration service already available from existing agent",
+                );
+                return false;
+            }
+        }
+        _ => {}
+    }
+
+    true // Spawn should be attempted
+}
+
+/// Commits the spawn result, updating child state and backoff.
+/// This runs with locks held and should complete quickly.
+/// Returns true if a trace-agent was successfully spawned, false otherwise.
+fn commit_spawn_result(
+    child_guard: &mut Option<std::process::Child>,
+    spec: &ProcessSpec,
+    backoff_secs_guard: &mut u64,
+    next_attempt_guard: &mut Option<Instant>,
+    spawn_result: std::io::Result<std::process::Child>,
+) -> bool {
+    match spawn_result {
+        Ok(new_child) => {
+            *child_guard = Some(new_child);
+            *backoff_secs_guard = get_backoff_initial_secs();
+            *next_attempt_guard = None;
+            record_process_spawn(spec);
+
+            // Return true if this is a trace-agent spawn
+            spec.name == "trace-agent"
+        }
+        Err(err) => {
+            log_error(&format!(
+                "Failed to spawn {} (program='{}', args={:?}): {}. Backing off {}s.",
+                spec.name, spec.program, spec.args, err, *backoff_secs_guard
+            ));
+            record_process_failure(spec);
+            let now = Instant::now();
+            let wait = Duration::from_secs(*backoff_secs_guard);
+            *next_attempt_guard = Some(now + wait);
+            *backoff_secs_guard = (*backoff_secs_guard)
+                .saturating_mul(2)
+                .min(get_backoff_max_secs());
+            false
+        }
+    }
+}
+
 /// Ensures the child described by `spec` is running. If it has exited or was never started,
 /// attempts to (re)spawn it with platform-specific conflict detection.
 ///
@@ -178,6 +293,10 @@ fn is_remote_config_available() -> bool {
 /// # Returns
 /// Returns `true` if a trace-agent was successfully spawned, `false` otherwise.
 /// This allows the caller to reset readiness state when a new trace-agent instance starts.
+///
+/// # Note
+/// This function holds locks during spawn, which can cause deadlocks.
+/// For new code, use `should_attempt_spawn` + spawn outside locks + `commit_spawn_result`.
 pub fn tick_process(
     child_guard: &mut Option<std::process::Child>,
     spec: &ProcessSpec,
@@ -308,19 +427,27 @@ fn monitor_loop(manager: &crate::manager::AgentManager) {
     let spawn_fn = |spec: &ProcessSpec| manager.spawn_process(spec);
     while manager.should_run.load(Ordering::SeqCst) {
         // Check and (re)spawn processes if needed
+        // Spawn happens outside lock scope to prevent deadlock during stop()
+        let mut agent_spawn_result: Option<std::io::Result<std::process::Child>> = None;
+        let mut trace_spawn_result: Option<std::io::Result<std::process::Child>> = None;
+        let mut agent_spec_to_spawn: Option<&ProcessSpec> = None;
+        let mut trace_spec_to_spawn: Option<&ProcessSpec> = None;
+
+        // Phase 1: Quick check with locks held to determine if spawn is needed
         {
             let mut agent_child = manager.agent_child.lock().unwrap();
             let mut agent_backoff = manager.agent_backoff_secs.lock().unwrap();
             let mut agent_next = manager.agent_next_attempt.lock().unwrap();
 
             if let Some(ref agent_spec) = manager.agent_spec {
-                let _trace_agent_spawned = tick_process(
+                if should_attempt_spawn(
                     &mut agent_child,
                     agent_spec,
                     &mut agent_backoff,
                     &mut agent_next,
-                    &spawn_fn,
-                );
+                ) {
+                    agent_spec_to_spawn = Some(agent_spec);
+                }
             }
         }
 
@@ -329,18 +456,75 @@ fn monitor_loop(manager: &crate::manager::AgentManager) {
             let mut trace_backoff = manager.trace_backoff_secs.lock().unwrap();
             let mut trace_next = manager.trace_next_attempt.lock().unwrap();
 
-            let trace_agent_spawned = tick_process(
+            if should_attempt_spawn(
                 &mut trace_child,
                 &manager.trace_spec,
                 &mut trace_backoff,
                 &mut trace_next,
-                &spawn_fn,
-            );
-
-            // Reset trace-agent readiness if we spawned a new instance
-            if trace_agent_spawned {
-                manager.reset_trace_agent_readiness();
+            ) {
+                trace_spec_to_spawn = Some(&manager.trace_spec);
             }
+        }
+
+        // Phase 2: Spawn outside lock scope (can be slow)
+        if let Some(spec) = agent_spec_to_spawn {
+            // Re-check should_run before expensive spawn
+            if !manager.should_run.load(Ordering::SeqCst) {
+                break;
+            }
+            agent_spawn_result = Some(spawn_fn(spec));
+        }
+
+        if let Some(spec) = trace_spec_to_spawn {
+            // Re-check should_run before expensive spawn
+            if !manager.should_run.load(Ordering::SeqCst) {
+                break;
+            }
+            trace_spawn_result = Some(spawn_fn(spec));
+        }
+
+        // Phase 3: Update state with locks held (quick)
+        let mut trace_agent_spawned = false;
+        {
+            let mut agent_child = manager.agent_child.lock().unwrap();
+            let mut agent_backoff = manager.agent_backoff_secs.lock().unwrap();
+            let mut agent_next = manager.agent_next_attempt.lock().unwrap();
+
+            if let Some(ref agent_spec) = manager.agent_spec {
+                if let Some(spawn_result) = agent_spawn_result.take() {
+                    trace_agent_spawned = commit_spawn_result(
+                        &mut agent_child,
+                        agent_spec,
+                        &mut agent_backoff,
+                        &mut agent_next,
+                        spawn_result,
+                    );
+                }
+            }
+        }
+
+        {
+            let mut trace_child = manager.trace_child.lock().unwrap();
+            let mut trace_backoff = manager.trace_backoff_secs.lock().unwrap();
+            let mut trace_next = manager.trace_next_attempt.lock().unwrap();
+
+            if let Some(spawn_result) = trace_spawn_result.take() {
+                let spawned = commit_spawn_result(
+                    &mut trace_child,
+                    &manager.trace_spec,
+                    &mut trace_backoff,
+                    &mut trace_next,
+                    spawn_result,
+                );
+                if spawned {
+                    trace_agent_spawned = true;
+                }
+            }
+        }
+
+        // Reset trace-agent readiness if we spawned a new instance
+        if trace_agent_spawned {
+            manager.reset_trace_agent_readiness();
         }
 
         // Compute dynamic sleep until next try based on backoff timers

@@ -762,7 +762,6 @@ mod tests {
 
     #[test]
     fn test_read_http_body_content_length_too_large() {
-        use std::io::Cursor;
         // Content-Length exceeds MAX_BODY_SIZE (100MB)
         let huge_size = (100 * 1024 * 1024 + 1).to_string();
         let headers = vec![("Content-Length".to_string(), huge_size)];
