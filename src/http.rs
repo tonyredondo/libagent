@@ -5,6 +5,14 @@
 
 use std::io::Read;
 
+/// Maximum allowed HTTP body size (100MB).
+/// This prevents DoS attacks via excessive memory allocation.
+const MAX_BODY_SIZE: usize = 100 * 1024 * 1024; // 100MB
+
+/// Maximum allowed chunk size for chunked transfer encoding (10MB).
+/// Individual chunks larger than this are rejected to prevent DoS attacks.
+const MAX_CHUNK_SIZE: usize = 10 * 1024 * 1024; // 10MB
+
 /// HTTP response container.
 #[derive(Debug)]
 pub struct Response {
@@ -210,6 +218,20 @@ pub fn read_chunked(stream: &mut dyn Read) -> Result<Vec<u8>, String> {
             let _ = stream.read(&mut tmp);
             break;
         }
+        // Validate chunk size to prevent DoS via excessive memory allocation
+        if size > MAX_CHUNK_SIZE {
+            return Err(format!(
+                "chunk size {} exceeds maximum allowed chunk size of {} bytes",
+                size, MAX_CHUNK_SIZE
+            ));
+        }
+        // Track total body size to prevent DoS via many chunks
+        if body.len().saturating_add(size) > MAX_BODY_SIZE {
+            return Err(format!(
+                "chunked body size would exceed maximum allowed size of {} bytes",
+                MAX_BODY_SIZE
+            ));
+        }
         let mut chunk = read_exact_len(stream, size)?;
         body.append(&mut chunk);
         // read the trailing CRLF after the chunk
@@ -298,6 +320,13 @@ pub fn read_http_body<R: Read>(
         let len: usize = len_str
             .parse()
             .map_err(|_| "invalid Content-Length".to_string())?;
+        // Validate Content-Length to prevent DoS via excessive memory allocation
+        if len > MAX_BODY_SIZE {
+            return Err(format!(
+                "Content-Length {} exceeds maximum allowed size of {} bytes",
+                len, MAX_BODY_SIZE
+            ));
+        }
         let mut body = Vec::with_capacity(len);
         // copy any already-read bytes from `rest`
         if !rest.is_empty() {
@@ -323,6 +352,13 @@ pub fn read_http_body<R: Read>(
                 .map_err(|e| format!("read error: {}", e))?;
             if n == 0 {
                 break;
+            }
+            // Validate total body size to prevent DoS via excessive EOF reading
+            if body.len().saturating_add(n) > MAX_BODY_SIZE {
+                return Err(format!(
+                    "body size would exceed maximum allowed size of {} bytes",
+                    MAX_BODY_SIZE
+                ));
             }
             body.extend_from_slice(&chunk[..n]);
         }
@@ -722,5 +758,73 @@ mod tests {
                 .iter()
                 .any(|(k, v)| k == "Connection" && v == "close")
         );
+    }
+
+    #[test]
+    fn test_read_http_body_content_length_too_large() {
+        use std::io::Cursor;
+        // Content-Length exceeds MAX_BODY_SIZE (100MB)
+        let huge_size = (100 * 1024 * 1024 + 1).to_string();
+        let headers = vec![("Content-Length".to_string(), huge_size)];
+        let mut reader = std::io::empty();
+        let result = read_http_body(&mut reader, &[], &headers);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds maximum allowed size"));
+    }
+
+    #[test]
+    fn test_read_chunked_chunk_size_too_large() {
+        use std::io::Cursor;
+        // Chunk size exceeds MAX_CHUNK_SIZE (10MB)
+        let huge_chunk = format!("{:x}\r\n", 10 * 1024 * 1024 + 1);
+        let data = format!("{}\r\n0\r\n\r\n", huge_chunk);
+        let mut reader = Cursor::new(data.as_bytes());
+        let result = read_chunked(&mut reader);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds maximum allowed chunk size"));
+    }
+
+    #[test]
+    fn test_read_chunked_total_body_too_large() {
+        use std::io::Cursor;
+        // Multiple chunks that together exceed MAX_BODY_SIZE (100MB)
+        // Use chunks of 10MB each (under MAX_CHUNK_SIZE) - 10 chunks = 100MB, 11th = 110MB (should fail)
+        let chunk_size = 10 * 1024 * 1024; // 10MB (at the limit of MAX_CHUNK_SIZE)
+        let chunk_size_hex = format!("{:x}", chunk_size);
+        let chunk_data = vec![0u8; chunk_size];
+        let mut data = Vec::new();
+        // Add 10 chunks (100MB total) - should be OK
+        for _ in 0..10 {
+            data.extend_from_slice(format!("{}\r\n", chunk_size_hex).as_bytes());
+            data.extend_from_slice(&chunk_data);
+            data.extend_from_slice(b"\r\n");
+        }
+        // 11th chunk (10MB) - total would be 110MB, should fail at size check before reading
+        data.extend_from_slice(format!("{}\r\n", chunk_size_hex).as_bytes());
+        // Note: We don't actually need to include the chunk data in the test,
+        // because the size check happens before reading the chunk data.
+        data.extend_from_slice(b"0\r\n\r\n");
+        let mut reader = Cursor::new(data);
+        let result = read_chunked(&mut reader);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        // Should fail with "would exceed maximum allowed size" since we check before reading
+        assert!(
+            err_msg.contains("would exceed maximum allowed size"),
+            "Error message: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_read_http_body_eof_too_large() {
+        use std::io::Cursor;
+        // Create a reader with data that would exceed MAX_BODY_SIZE
+        let large_data = vec![0u8; 100 * 1024 * 1024 + 1]; // 100MB + 1 byte
+        let mut reader = Cursor::new(&large_data);
+        let headers = vec![]; // No Content-Length or Transfer-Encoding
+        let result = read_http_body(&mut reader, &[], &headers);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("would exceed maximum allowed size"));
     }
 }

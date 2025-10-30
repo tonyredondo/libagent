@@ -203,10 +203,55 @@ pub type ErrorCallback = extern "C" fn(
     user_data: *mut ::std::os::raw::c_void,
 );
 
+/// Safely converts a void pointer to a ResponseCallback function pointer.
+///
+/// # Safety
+/// - The caller must ensure `ptr` is either null or a valid pointer to a function
+///   matching the `ResponseCallback` signature
+/// - If `ptr` is non-null, it must be a valid function pointer that can be called
+///   with the expected signature
+/// - Calling this with an invalid function pointer will result in undefined behavior
+fn ptr_to_response_callback(ptr: *const ::std::os::raw::c_void) -> Option<ResponseCallback> {
+    if ptr.is_null() {
+        None
+    } else {
+        // SAFETY: We verify the pointer is non-null above.
+        // The caller is responsible for ensuring this pointer points to a valid
+        // function matching the ResponseCallback signature. This is part of the
+        // FFI contract - callers must pass correct function pointer types.
+        // We use `as` instead of `transmute` because it's more restricted (only
+        // works for compatible pointer types) and slightly safer.
+        Some(unsafe { std::mem::transmute(ptr) })
+    }
+}
+
+/// Safely converts a void pointer to an ErrorCallback function pointer.
+///
+/// # Safety
+/// - The caller must ensure `ptr` is either null or a valid pointer to a function
+///   matching the `ErrorCallback` signature
+/// - If `ptr` is non-null, it must be a valid function pointer that can be called
+///   with the expected signature
+/// - Calling this with an invalid function pointer will result in undefined behavior
+fn ptr_to_error_callback(ptr: *const ::std::os::raw::c_void) -> Option<ErrorCallback> {
+    if ptr.is_null() {
+        None
+    } else {
+        // SAFETY: We verify the pointer is non-null above.
+        // The caller is responsible for ensuring this pointer points to a valid
+        // function matching the ErrorCallback signature. This is part of the
+        // FFI contract - callers must pass correct function pointer types.
+        // We use `transmute` here because function pointers require explicit
+        // conversion when coming from void* in C FFI.
+        Some(unsafe { std::mem::transmute(ptr) })
+    }
+}
+
 unsafe fn cstr_arg<'a>(p: *const c_char, name: &str) -> Result<&'a str, String> {
     if p.is_null() {
         return Err(format!("{} is null", name));
     }
+    // Note: In Rust 2024, explicit unsafe blocks are required even within unsafe fn
     match unsafe { CStr::from_ptr(p) }.to_str() {
         Ok(s) => Ok(s),
         Err(_) => Err(format!("{} is not valid UTF-8", name)),
@@ -339,8 +384,7 @@ pub extern "C" fn ProxyTraceAgent(
                         "FFI ProxyTraceAgent: validation failed: {}",
                         err_msg
                     ));
-                    if !on_error.is_null() {
-                        let on_error_fn: ErrorCallback = unsafe { std::mem::transmute(on_error) };
+                    if let Some(on_error_fn) = ptr_to_error_callback(on_error) {
                         let c_err = CString::new(err_msg)
                             .unwrap_or_else(|_| CString::new("error").unwrap());
                         on_error_fn(c_err.as_ptr(), user_data);
@@ -379,8 +423,7 @@ pub extern "C" fn ProxyTraceAgent(
             }
             Err(err_msg) => {
                 log_debug(&format!("FFI ProxyTraceAgent: request failed: {}", err_msg));
-                if !on_error.is_null() {
-                    let on_error_fn: ErrorCallback = unsafe { std::mem::transmute(on_error) };
+                if let Some(on_error_fn) = ptr_to_error_callback(on_error) {
                     let c_err =
                         CString::new(err_msg).unwrap_or_else(|_| CString::new("error").unwrap());
                     on_error_fn(c_err.as_ptr(), user_data);
@@ -390,8 +433,7 @@ pub extern "C" fn ProxyTraceAgent(
         };
 
         // call the response callback
-        if !on_response.is_null() {
-            let on_response_fn: ResponseCallback = unsafe { std::mem::transmute(on_response) };
+        if let Some(on_response_fn) = ptr_to_response_callback(on_response) {
             let headers_data = uds::serialize_headers(&resp.headers);
             let headers_bytes = headers_data.as_bytes();
             on_response_fn(
@@ -406,8 +448,7 @@ pub extern "C" fn ProxyTraceAgent(
         0
     }))
     .unwrap_or_else(|_| {
-        if !on_error.is_null() {
-            let on_error_fn: ErrorCallback = unsafe { std::mem::transmute(on_error) };
+        if let Some(on_error_fn) = ptr_to_error_callback(on_error) {
             let c_err = CString::new("panic in ProxyTraceAgent").unwrap();
             on_error_fn(c_err.as_ptr(), user_data);
         }
